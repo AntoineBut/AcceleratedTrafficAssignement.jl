@@ -14,7 +14,10 @@ struct CHGraph{
 	g_down::G # Downward graph
 end
 
-
+function cost(edge_diff::Int, n_contr_neighbors::Int)
+	# A cost function to prioritize nodes during contraction
+	return 10 * edge_diff + min(n_contr_neighbors, 10)
+end
 
 
 function compute_CH(graph::G, weights::Dict{Tuple{Int,Int},Float64}) where G <: AbstractGraph
@@ -34,9 +37,10 @@ end
 function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) where G <: AbstractGraph
 	# This function augments the graph by adding shortcuts and computes the node ordering.
 	
-	queue = PriorityQueue{Int, Int}() # Node priority queue
 	node_order = Vector{Int}(undef, nv(graph)) # Node ordering, will be filled during contraction
 	order_index = 0 # Current index in the ordering
+	processed = zeros(Bool, nv(graph)) # Track processed nodes
+	n_contr_neighbors = zeros(Int, nv(graph)) # Track number of shortcuts per node
 
 	graph = deepcopy(graph) # Work on a copy of the graph as we will modify it
 	g_augmented = deepcopy(graph) # Store all shortcuts without removing any here
@@ -46,29 +50,51 @@ function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) wher
 
 	# For all nodes, run witness search to determine the number of shortcuts needed
 	# The initial priority is the edge difference
-	s = 0
-	for node in 1:nv(graph)
-		ed = edge_difference(graph, weights, node)
-		s += ed
-		enqueue!(queue, node, ed)
-	end
-	#println("Initial total edge difference: $s")
+	queue = recompute_queue(graph, weights, processed, n_contr_neighbors)
 
 	# Simplified contraction process: contract nodes in order of priority
 	while !isempty(queue)
-
-		node, p = popfirst!(queue)
-		# Assigne lowest order to the contracted node
-		node_order[node] = order_index
+		## Progress
 		order_index += 1
 		progress = order_index / length(node_order)
-
-		# Fancy progressbar
 		if order_index % 100 == 0
 			done = Int(floor(progress * 10))
 			print("\r [" * repeat('█', done) * repeat('*', 10 - done) * "] - $(round(progress * 100, digits=2))%")
 		end
 
+		## Recompute
+		interval = Int(0.1 * length(node_order))
+		if order_index % interval == 0
+			# Recompute priorities every 10% of contractions to reflect graph changes
+			queue = recompute_queue(graph, weights, processed, n_contr_neighbors)
+		end
+
+		## Select next node to contract
+		found = false
+		node = 0
+		while !found
+			node, _ = popfirst!(queue)
+			if isempty(queue)
+				found = true
+				break
+			end
+			# Lazy updating
+			cost_node = cost(edge_difference(graph, weights, node), n_contr_neighbors[node])
+			node2, p2 = peek(queue)
+			if cost_node <= p2
+				found = true
+			else
+				# Reinsert with updated priority
+				enqueue!(queue, node, cost_node)
+			end
+		end
+		
+		## Contracting the selected node
+
+		processed[node] = true
+		# Assign lowest order to the contracted node
+		node_order[node] = order_index
+	
 		# For each neighbor, add shortcuts as needed
 		inneighbors_list = collect(inneighbors(graph, node))
 		outneighbors_list = collect(outneighbors(graph, node))
@@ -89,6 +115,8 @@ function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) wher
 				search_dist = maximum(in_weights) + maximum(out_weights)
 				witness_distances = witness_search(graph, weights, n, node, search_dist)
 				for (i, m) in enumerate(outneighbors_list)
+					n_contr_neighbors[n] += 1
+					n_contr_neighbors[m] += 1
 
 					direct_distance = weights[(n, node)] + weights[(node, m)]
 					if witness_distances[i] > direct_distance
@@ -97,6 +125,16 @@ function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) wher
 						add_edge!(graph, n, m) # For computing further shortcuts
 						push!(weights, (n, m) => direct_distance)
 						push!(weights_augmented, (n, m) => direct_distance)
+						# Update priorities of neighbors
+						if !processed[n]
+							# Update priority of n in the queue
+							queue[n] = queue[n] + 1
+							
+						end
+						if !processed[m]
+							# Update priority of m in the queue
+							queue[m] = queue[m] + 1
+						end
 					end
 				end
 			end
@@ -139,6 +177,19 @@ function remove_node!(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int, in
 			delete!(weights, (node, m))
 		end
 	end
+end
+
+function recompute_queue(g::G, weights::Dict{Tuple{Int,Int},Float64}, processed::Vector{Bool}, n_contr_neighbors::Vector{Int}) where G <: AbstractGraph
+	# This function recomputes the priority queue based on current edge differences.
+	
+	new_queue = PriorityQueue{Int, Int}()
+	for node in 1:nv(g)
+		if !processed[node]
+			ed = edge_difference(g, weights, node)
+			enqueue!(new_queue, node, cost(ed, n_contr_neighbors[node]))
+		end
+	end
+	return new_queue
 end
 
 function edge_difference(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int) where G <: AbstractGraph

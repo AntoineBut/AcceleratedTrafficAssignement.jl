@@ -1,7 +1,7 @@
 using Graphs, Random, SimpleWeightedGraphs, DataStructures, AcceleratedTrafficAssignement, BenchmarkTools
 # Set random seed for reproducibility
 Random.seed!(42)
-g = grid((200, 500))
+g = grid((1000, 1000))
 g_w = SimpleDiGraph(nv(g))
 weights = Dict{Tuple{Int,Int},Float64}()
 # Assign random weights to edges
