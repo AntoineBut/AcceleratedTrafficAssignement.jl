@@ -38,14 +38,17 @@ function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) wher
 	node_order = Vector{Int}(undef, nv(graph)) # Node ordering, will be filled during contraction
 	order_index = 0 # Current index in the ordering
 
-	g_augmented = deepcopy(graph) # Start with the original graph
+	graph = deepcopy(graph) # Work on a copy of the graph as we will modify it
+	g_augmented = deepcopy(graph) # Store all shortcuts without removing any here
+
 	weights = deepcopy(org_weights) # Start with original weights
+	weights_augmented = deepcopy(org_weights) # Store weights of augmented graph
 
 	# For all nodes, run witness search to determine the number of shortcuts needed
 	# The initial priority is the edge difference
 	s = 0
 	for node in 1:nv(graph)
-		ed = edge_difference(g_augmented, weights, node)
+		ed = edge_difference(graph, weights, node)
 		s += ed
 		enqueue!(queue, node, ed)
 	end
@@ -53,35 +56,89 @@ function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) wher
 
 	# Simplified contraction process: contract nodes in order of priority
 	while !isempty(queue)
+
 		node, p = popfirst!(queue)
 		# Assigne lowest order to the contracted node
 		node_order[node] = order_index
 		order_index += 1
+		progress = order_index / length(node_order)
+
+		# Fancy progressbar
+		if order_index % 100 == 0
+			done = Int(floor(progress * 10))
+			print("\r [" * repeat('█', done) * repeat('*', 10 - done) * "] - $(round(progress * 100, digits=2))%")
+		end
 
 		# For each neighbor, add shortcuts as needed
-		inneighbors_list = inneighbors(g_augmented, node)
-		outneighbors_list = outneighbors(g_augmented, node)
+		inneighbors_list = collect(inneighbors(graph, node))
+		outneighbors_list = collect(outneighbors(graph, node))
 
-		in_weights = [weights[(m, node)] for m in inneighbors_list]
+		# Handle isolated, source, and sink nodes
+		# We only remove edges because removing vertices messes up the indexing
+		if isempty(inneighbors_list) || isempty(outneighbors_list)
+			remove_node!(graph, weights, node, inneighbors_list, outneighbors_list)
+			continue
+		end
+
+		in_weights = [weights[(n, node)] for n in inneighbors_list]
 		out_weights = [weights[(node, m)] for m in outneighbors_list]
-		search_dist = maximum(vcat(in_weights, [0.0])) + maximum(vcat(out_weights, [0.0]))
 
-		for n in inneighbors_list
-			witness_distances = witness_search(g_augmented, weights, n, node, search_dist)
-			for (i, m) in enumerate(outneighbors_list)
-				if m == n
-					continue
+		if progress < 1 # Not used currently
+			# Explore neighbors
+			for n in inneighbors_list
+				search_dist = maximum(in_weights) + maximum(out_weights)
+				witness_distances = witness_search(graph, weights, n, node, search_dist)
+				for (i, m) in enumerate(outneighbors_list)
+
+					direct_distance = weights[(n, node)] + weights[(node, m)]
+					if witness_distances[i] > direct_distance
+						# Add shortcut edge
+						add_edge!(g_augmented, n, m) # For storing all shortcuts
+						add_edge!(graph, n, m) # For computing further shortcuts
+						push!(weights, (n, m) => direct_distance)
+						push!(weights_augmented, (n, m) => direct_distance)
+					end
 				end
-				direct_distance = weights[(n, node)] + weights[(node, m)]
-				if witness_distances[i] > direct_distance
+			end
+		else
+			# For the last few nodes, we skip exploring and just add all possible shortcuts
+			# This is a common heuristic in CH implementations
+			for n in inneighbors_list
+				for m in outneighbors_list
+					direct_distance = weights[(n, node)] + weights[(node, m)]
 					# Add shortcut edge
-					add_edge!(g_augmented, n, m)
+					add_edge!(g_augmented, n, m) # For storing all shortcuts
+					add_edge!(graph, n, m) # For computing further shortcuts
 					push!(weights, (n, m) => direct_distance)
+					push!(weights_augmented, (n, m) => direct_distance)
 				end
 			end
 		end
+		# Finally, remove the edges of the contracted node
+		remove_node!(graph, weights, node, inneighbors_list, outneighbors_list)
 	end
+	println() # New line after progress bar
 	return g_augmented, weights, node_order
+end
+
+function remove_node!(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int, inneighbors::Vector{Int}, outneighbors::Vector{Int}) where G <: AbstractGraph
+	# This function removes a node from the graph and updates the weights dictionary accordingly.
+	# We only remove edges because removing vertices messes up the indexing
+	# Remove all incoming edges to the node
+	if !isempty(inneighbors)
+		for n in inneighbors
+			rem_edge!(g, n, node)
+			delete!(weights, (n, node))
+		end
+	end
+
+	# Remove all outgoing edges from the node
+	if !isempty(outneighbors)
+		for m in outneighbors
+			rem_edge!(g, node, m)
+			delete!(weights, (node, m))
+		end
+	end
 end
 
 function edge_difference(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int) where G <: AbstractGraph
@@ -110,7 +167,6 @@ function edge_difference(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int)
 		end
 		
 	end
-	#println("Node $node: Edge difference = $num_shortcuts_added - $num_edges")
 	return num_shortcuts_added - num_edges
 end
 
@@ -142,7 +198,7 @@ function witness_search(g::G, weights::Dict{Tuple{Int,Int},Float64}, source::Int
 			break
 		end
 
-		for v in neighbors(g, u)
+		for v in outneighbors(g, u)
 			if v == skip || v in visited
 				continue
 			end

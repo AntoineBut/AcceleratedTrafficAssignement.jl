@@ -1,1 +1,4 @@
 /Manifest*.toml
+/dev/*
+.DS_Store
+.vscode/*
