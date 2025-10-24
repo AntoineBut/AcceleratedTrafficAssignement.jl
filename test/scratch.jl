@@ -2,7 +2,7 @@ using Graphs, Random, SimpleWeightedGraphs, DataStructures
 using AcceleratedTrafficAssignement, BenchmarkTools, SparseArrays
 # Set random seed for reproducibility
 Random.seed!(42)
-g = grid((300, 300))
+g = grid((500, 500))
 g_1 = SimpleDiGraph(nv(g))
 weights_1 = Dict{Tuple{Int,Int},Float64}()
 # Assign random weights to edges
@@ -41,10 +41,12 @@ end
 function bench()
 	@benchmark compute_CH(g_w, weights)
 end
-@time CH = compute_CH(g_w, weights);
-println("OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down)) - AUG:$(ne(CH.g_augmented))");
+#@time CH = compute_CH(g_w, weights);
+@time CH = compute_CH2(g_w, weights);
 
-distances = shortest_path_CH(CH, 1);
+println("OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))");
+
+distances = shortest_path_CH2(CH, 1);
 
 g_ref = CH.g;
 weights_ref = CH.weights;
@@ -60,17 +62,18 @@ distances_ref = dijkstra_shortest_paths(g_ref, 1, weights_matrix).dists
 println(isapprox(distances, distances_ref))
 function verify_levels(CH::CHGraph)
 	err = 0
-	g_down = CH.g_down
+	g_down_rev = CH.g_down_rev
 	levels = CH.levels
-	for e in edges(g_down)
-		u = src(e)
-		v = dst(e)
+	for e in edges(g_down_rev)
+		# the edge (u, v) in g_down_rev is stored reversed
+		v = src(e)
+		u = dst(e)
 		if levels[u] <= levels[v]
 			err += 1
 		end
 	end
 	if err > 0
-		error("Level verification failed in g_down: $err violations found out of $(ne(g_down)).")
+		error("Level verification failed in g_down: $err violations found out of $(ne(g_down_rev)).")
 	else
 		println("All levels verified in g_down.")
 	end
@@ -78,7 +81,7 @@ end
 verify_levels(CH)
 error("Stop here")
 # Verify : If (u, v) ∈ g_down, then level(u) > level(v).
-@benchmark distances = shortest_path_CH(CH, 1)
+@benchmark distances = shortest_path_CH2(CH, 1)
 @benchmark distances_ref = dijkstra_shortest_paths(CH.g, 1, weights_matrix).dists
 
 

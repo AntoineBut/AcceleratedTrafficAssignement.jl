@@ -3,7 +3,8 @@
 # The CHGraph type represents a contraction hierarchy graph
 
 struct CHGraph{
-	G <: AbstractGraph
+	G <: AbstractGraph,
+	G2 <: AbstractGraph
 }
 	g::G # Original graph
 	weights::Dict{Tuple{Int,Int},Float64} # Edge weights
@@ -11,8 +12,8 @@ struct CHGraph{
 	levels::Vector{Int} # Levels of nodes in the hierarchy
 	g_augmented::G # Augmented graph with shortcuts
 	weights_augmented::Dict{Tuple{Int,Int},Float64} # Weights of augmented graph
-	g_up::G # Upward graph
-	g_down::G # Downward graph
+	g_up::G2 # Upward graph
+	g_down_rev::G2 # Downward graph, stored reversed for easier backward search
 	reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
 end
 
@@ -40,10 +41,34 @@ function compute_CH(graph::G, weights::Dict{Tuple{Int,Int},Float64}) where G <: 
 	node_order_p = node_order[reordering]
 	levels_p = levels[reordering]
 	# Compute g_up and g_down graphs using g_augmented.
-	g_up, g_down = compute_up_down_graphs(g_augmented_p, node_order_p)
+	g_up, g_down_rev = compute_up_down_graphs(g_augmented_p, node_order_p)
 
 	# We return the CHGraph, 
-	return CHGraph(graph_p, weights_p, node_order_p, levels_p, g_augmented_p, weights_augmented_p, g_up, g_down, indices)
+	return CHGraph(graph_p, weights_p, node_order_p, levels_p, g_augmented_p, weights_augmented_p, g_up, g_down_rev, indices)
+end
+
+function compute_CH2(graph::G, weights::Dict{Tuple{Int,Int},Float64}) where G <: AbstractGraph
+	# The CH algorithm computes a contraction hierarchy for the given graph.
+	
+	# Create the CH representation of the graph: augment with shortcuts
+	# The node ordering is also computed during this step.
+	weights_augmented = deepcopy(weights)
+	g_augmented = deepcopy(graph)
+	node_order, levels = augment_graph!(graph, g_augmented, weights, weights_augmented)
+	# Re-order nodes by levels
+	reordering = sortperm(levels, rev=true)
+
+	#reordering = collect(1:nv(graph))
+	g_augmented_p, weights_augmented_p, indices = permuted_graph(reordering, g_augmented, weights_augmented)
+	graph_p, weights_p, _ = permuted_graph(reordering, graph, weights)
+	#g_augmented_p, weights_augmented_p = g_augmented, weights_augmented
+	node_order_p = node_order[reordering]
+	levels_p = levels[reordering]
+	# Compute g_up and g_down graphs using g_augmented.
+	g_up, g_down_rev = compute_up_down_graphs_2(g_augmented_p, weights_augmented_p, node_order_p)
+
+	# We return the CHGraph, 
+	return CHGraph(graph_p, weights_p, node_order_p, levels_p, g_augmented_p, weights_augmented_p, g_up, g_down_rev, indices)
 end
 
 function augment_graph!(org_graph::G, g_augmented::G, org_weights::Dict{Tuple{Int,Int},Float64}, weights_augmented::Dict{Tuple{Int,Int},Float64}) where G <: AbstractGraph
@@ -274,3 +299,41 @@ function compute_up_down_graphs(g_augmented::G, node_order::Vector{Int}) where G
 	return g_up, g_down
 end
 
+function compute_up_down_graphs_2(g_augmented::G, weights::Dict{Tuple{Int,Int},Float64}, node_order::Vector{Int}) where G <: AbstractGraph
+	# This function computes the upward and downward graphs from the augmented graph.
+	
+	# g_up contains edges from lower to higher order nodes
+	# g_down contains edges from higher to lower order nodes
+	# Weighted graphs use CSC matrix, so incremental edge addition is not possible.
+
+	
+	# Need to build array representation
+	sources_up = Int[]
+	targets_up = Int[]
+	weights_up = Float64[]
+
+	sources_down = Int[]
+	targets_down = Int[]
+	weights_down = Float64[]
+
+	for e in edges(g_augmented)
+		u = src(e)
+		v = dst(e)
+		weight = weights[(u, v)]
+		if node_order[u] < node_order[v]
+			push!(sources_up, u)
+			push!(targets_up, v)
+			push!(weights_up, weight)
+		else
+			# g_down is stored reversed for easier backward search (need access to incoming edges)
+			push!(sources_down, v)
+			push!(targets_down, u)
+			push!(weights_down, weight)
+		end
+	end
+
+	g_up = SimpleWeightedDiGraph(sources_up, targets_up, weights_up)
+	g_down = SimpleWeightedDiGraph(sources_down, targets_down, weights_down)
+
+	return g_up, g_down
+end

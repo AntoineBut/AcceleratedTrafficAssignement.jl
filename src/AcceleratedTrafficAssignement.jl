@@ -14,8 +14,8 @@ augment_graph,
 edge_difference, 
 witness_search,
 compute_up_down_graphs,
-compute_CH,
-shortest_path_CH,
+compute_CH, compute_CH2,
+shortest_path_CH, shortest_path_CH2,
 reorder_vertices_dfs,
 permuted_graph
 end
