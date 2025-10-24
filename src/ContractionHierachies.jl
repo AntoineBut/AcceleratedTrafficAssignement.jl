@@ -8,10 +8,12 @@ struct CHGraph{
 	g::G # Original graph
 	weights::Dict{Tuple{Int,Int},Float64} # Edge weights
 	node_order::Vector{Int} # Ordering of nodes
+	levels::Vector{Int} # Levels of nodes in the hierarchy
 	g_augmented::G # Augmented graph with shortcuts
 	weights_augmented::Dict{Tuple{Int,Int},Float64} # Weights of augmented graph
 	g_up::G # Upward graph
 	g_down::G # Downward graph
+	reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
 end
 
 function cost(edge_diff::Int, n_contr_neighbors::Int)
@@ -25,28 +27,36 @@ function compute_CH(graph::G, weights::Dict{Tuple{Int,Int},Float64}) where G <: 
 	
 	# Create the CH representation of the graph: augment with shortcuts
 	# The node ordering is also computed during this step.
-	g_augmented, weights_augmented, node_order = augment_graph(graph, weights)
+	weights_augmented = deepcopy(weights)
+	g_augmented = deepcopy(graph)
+	node_order, levels = augment_graph!(graph, g_augmented, weights, weights_augmented)
+	# Re-order nodes by levels
+	reordering = sortperm(levels, rev=true)
 
+	#reordering = collect(1:nv(graph))
+	g_augmented_p, weights_augmented_p, indices = permuted_graph(reordering, g_augmented, weights_augmented)
+	graph_p, weights_p, _ = permuted_graph(reordering, graph, weights)
+	#g_augmented_p, weights_augmented_p = g_augmented, weights_augmented
+	node_order_p = node_order[reordering]
+	levels_p = levels[reordering]
 	# Compute g_up and g_down graphs using g_augmented.
-	g_up, g_down = compute_up_down_graphs(g_augmented, weights, node_order)
+	g_up, g_down = compute_up_down_graphs(g_augmented_p, node_order_p)
 
 	# We return the CHGraph, 
-	return CHGraph(graph, weights, node_order, g_augmented, weights_augmented, g_up, g_down)
+	return CHGraph(graph_p, weights_p, node_order_p, levels_p, g_augmented_p, weights_augmented_p, g_up, g_down, indices)
 end
 
-function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) where G <: AbstractGraph
+function augment_graph!(org_graph::G, g_augmented::G, org_weights::Dict{Tuple{Int,Int},Float64}, weights_augmented::Dict{Tuple{Int,Int},Float64}) where G <: AbstractGraph
 	# This function augments the graph by adding shortcuts and computes the node ordering.
+	graph = deepcopy(org_graph) # Work on a copy of the graph as we will modify it
+	weights = deepcopy(org_weights) # Start with original weights
 	
 	node_order = Vector{Int}(undef, nv(graph)) # Node ordering, will be filled during contraction
 	order_index = 0 # Current index in the ordering
 	processed = zeros(Bool, nv(graph)) # Track processed nodes
 	n_contr_neighbors = zeros(Int, nv(graph)) # Track number of shortcuts per node
+	levels = zeros(Int, nv(graph)) # Track levels of nodes (not used currently)
 
-	graph = deepcopy(graph) # Work on a copy of the graph as we will modify it
-	g_augmented = deepcopy(graph) # Store all shortcuts without removing any here
-
-	weights = deepcopy(org_weights) # Start with original weights
-	weights_augmented = deepcopy(org_weights) # Store weights of augmented graph
 
 	# For all nodes, run witness search to determine the number of shortcuts needed
 	# The initial priority is the edge difference
@@ -63,7 +73,7 @@ function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) wher
 		end
 
 		## Recompute
-		interval = Int(0.1 * length(node_order))
+		interval = Int(ceil(0.1 * length(node_order)))
 		if order_index % interval == 0
 			# Recompute priorities every 10% of contractions to reflect graph changes
 			queue = recompute_queue(graph, weights, processed, n_contr_neighbors)
@@ -90,81 +100,53 @@ function augment_graph(graph::G, org_weights::Dict{Tuple{Int,Int},Float64}) wher
 		end
 		
 		## Contracting the selected node
-
 		processed[node] = true
-		# Assign lowest order to the contracted node
 		node_order[node] = order_index
 	
-		# For each neighbor, add shortcuts as needed
 		inneighbors_list = collect(inneighbors(graph, node))
 		outneighbors_list = collect(outneighbors(graph, node))
 
-		# Handle isolated, source, and sink nodes
-		# We only remove edges because removing vertices messes up the indexing
+		# No shortcuts need for these nodes
 		if isempty(inneighbors_list) || isempty(outneighbors_list)
-			remove_node!(graph, weights, node, inneighbors_list, outneighbors_list)
+			remove_node!(graph, weights, node, inneighbors_list, outneighbors_list, levels)
 			continue
 		end
 
 		in_weights = [weights[(n, node)] for n in inneighbors_list]
 		out_weights = [weights[(node, m)] for m in outneighbors_list]
 
-		if progress < 1 # Not used currently
-			# Explore neighbors
-			for n in inneighbors_list
-				search_dist = maximum(in_weights) + maximum(out_weights)
-				witness_distances = witness_search(graph, weights, n, node, search_dist)
-				for (i, m) in enumerate(outneighbors_list)
-					n_contr_neighbors[n] += 1
-					n_contr_neighbors[m] += 1
-
-					direct_distance = weights[(n, node)] + weights[(node, m)]
-					if witness_distances[i] > direct_distance
-						# Add shortcut edge
-						add_edge!(g_augmented, n, m) # For storing all shortcuts
-						add_edge!(graph, n, m) # For computing further shortcuts
-						push!(weights, (n, m) => direct_distance)
-						push!(weights_augmented, (n, m) => direct_distance)
-						# Update priorities of neighbors
-						if !processed[n]
-							# Update priority of n in the queue
-							queue[n] = queue[n] + 1
-							
-						end
-						if !processed[m]
-							# Update priority of m in the queue
-							queue[m] = queue[m] + 1
-						end
-					end
-				end
-			end
-		else
-			# For the last few nodes, we skip exploring and just add all possible shortcuts
-			# This is a common heuristic in CH implementations
-			for n in inneighbors_list
-				for m in outneighbors_list
-					direct_distance = weights[(n, node)] + weights[(node, m)]
+		# Explore neighbors
+		for n in inneighbors_list
+			search_dist = maximum(in_weights) + maximum(out_weights)
+			witness_distances = witness_search(graph, weights, n, node, search_dist)
+			for (i, m) in enumerate(outneighbors_list)
+				n_contr_neighbors[n] += 1
+				n_contr_neighbors[m] += 1
+				direct_distance = weights[(n, node)] + weights[(node, m)]
+				if witness_distances[i] > direct_distance
 					# Add shortcut edge
 					add_edge!(g_augmented, n, m) # For storing all shortcuts
 					add_edge!(graph, n, m) # For computing further shortcuts
 					push!(weights, (n, m) => direct_distance)
 					push!(weights_augmented, (n, m) => direct_distance)
+					
 				end
 			end
 		end
 		# Finally, remove the edges of the contracted node
-		remove_node!(graph, weights, node, inneighbors_list, outneighbors_list)
+		remove_node!(graph, weights, node, inneighbors_list, outneighbors_list, levels)
 	end
 	println() # New line after progress bar
-	return g_augmented, weights, node_order
+	return node_order, levels
 end
 
-function remove_node!(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int, inneighbors::Vector{Int}, outneighbors::Vector{Int}) where G <: AbstractGraph
+function remove_node!(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int, inneighbors::Vector{Int}, outneighbors::Vector{Int}, levels::Vector{Int}) where G <: AbstractGraph
 	# This function removes a node from the graph and updates the weights dictionary accordingly.
 	# We only remove edges because removing vertices messes up the indexing
 	# Remove all incoming edges to the node
 	if !isempty(inneighbors)
 		for n in inneighbors
+			levels[n] = max(levels[n], levels[node] + 1)
 			rem_edge!(g, n, node)
 			delete!(weights, (n, node))
 		end
@@ -173,6 +155,7 @@ function remove_node!(g::G, weights::Dict{Tuple{Int,Int},Float64}, node::Int, in
 	# Remove all outgoing edges from the node
 	if !isempty(outneighbors)
 		for m in outneighbors
+			levels[m] = max(levels[m], levels[node] + 1)
 			rem_edge!(g, node, m)
 			delete!(weights, (node, m))
 		end
@@ -239,9 +222,6 @@ function witness_search(g::G, weights::Dict{Tuple{Int,Int},Float64}, source::Int
 
 	while !isempty(queue)
 		u , dist_u = popfirst!(queue)
-		if u in visited
-			continue
-		end
 		push!(visited, u)
 
 		# Early stopping if we exceed max_distance
@@ -271,7 +251,7 @@ function witness_search(g::G, weights::Dict{Tuple{Int,Int},Float64}, source::Int
 	return distances_to_targets
 end
 
-function compute_up_down_graphs(g_augmented::G, weights::Dict{Tuple{Int,Int},Float64}, node_order::Vector{Int}) where G <: AbstractGraph
+function compute_up_down_graphs(g_augmented::G, node_order::Vector{Int}) where G <: AbstractGraph
 	# This function computes the upward and downward graphs from the augmented graph.
 	
 	# g_up contains edges from lower to higher order nodes
@@ -280,7 +260,7 @@ function compute_up_down_graphs(g_augmented::G, weights::Dict{Tuple{Int,Int},Flo
 
 	g_up = SimpleDiGraph(nv(g_augmented))
 	g_down = SimpleDiGraph(nv(g_augmented))
-
+	
 	for e in edges(g_augmented)
 		u = src(e)
 		v = dst(e)
