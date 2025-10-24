@@ -2,7 +2,7 @@ using Graphs, Random, SimpleWeightedGraphs, DataStructures
 using AcceleratedTrafficAssignement, BenchmarkTools, SparseArrays
 # Set random seed for reproducibility
 Random.seed!(42)
-g = grid((500, 500))
+g = grid((1000, 1000))
 g_1 = SimpleDiGraph(nv(g))
 weights_1 = Dict{Tuple{Int,Int},Float64}()
 # Assign random weights to edges
@@ -27,6 +27,7 @@ order = collect(1:nv(g_1));
 g_w, weights = permuted_graph(order, g_1, weights_1);
 
 
+
 function launch()
 	println("###### Running CH ######")
 	@time CH = compute_CH(g_w, weights)
@@ -41,12 +42,11 @@ end
 function bench()
 	@benchmark compute_CH(g_w, weights)
 end
-#@time CH = compute_CH(g_w, weights);
-@time CH = compute_CH2(g_w, weights);
+@time CH = compute_CH(g_w, weights);
 
 println("OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))");
 
-distances = shortest_path_CH2(CH, 1);
+distances = shortest_path_CH(CH, 1);
 
 g_ref = CH.g;
 weights_ref = CH.weights;
@@ -81,7 +81,7 @@ end
 verify_levels(CH)
 error("Stop here")
 # Verify : If (u, v) ∈ g_down, then level(u) > level(v).
-@benchmark distances = shortest_path_CH2(CH, 1)
+@benchmark distances = shortest_path_CH(CH, 1)
 @benchmark distances_ref = dijkstra_shortest_paths(CH.g, 1, weights_matrix).dists
 
 

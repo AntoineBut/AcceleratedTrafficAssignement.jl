@@ -41,31 +41,7 @@ function compute_CH(graph::G, weights::Dict{Tuple{Int,Int},Float64}) where G <: 
 	node_order_p = node_order[reordering]
 	levels_p = levels[reordering]
 	# Compute g_up and g_down graphs using g_augmented.
-	g_up, g_down_rev = compute_up_down_graphs(g_augmented_p, node_order_p)
-
-	# We return the CHGraph, 
-	return CHGraph(graph_p, weights_p, node_order_p, levels_p, g_augmented_p, weights_augmented_p, g_up, g_down_rev, indices)
-end
-
-function compute_CH2(graph::G, weights::Dict{Tuple{Int,Int},Float64}) where G <: AbstractGraph
-	# The CH algorithm computes a contraction hierarchy for the given graph.
-	
-	# Create the CH representation of the graph: augment with shortcuts
-	# The node ordering is also computed during this step.
-	weights_augmented = deepcopy(weights)
-	g_augmented = deepcopy(graph)
-	node_order, levels = augment_graph!(graph, g_augmented, weights, weights_augmented)
-	# Re-order nodes by levels
-	reordering = sortperm(levels, rev=true)
-
-	#reordering = collect(1:nv(graph))
-	g_augmented_p, weights_augmented_p, indices = permuted_graph(reordering, g_augmented, weights_augmented)
-	graph_p, weights_p, _ = permuted_graph(reordering, graph, weights)
-	#g_augmented_p, weights_augmented_p = g_augmented, weights_augmented
-	node_order_p = node_order[reordering]
-	levels_p = levels[reordering]
-	# Compute g_up and g_down graphs using g_augmented.
-	g_up, g_down_rev = compute_up_down_graphs_2(g_augmented_p, weights_augmented_p, node_order_p)
+	g_up, g_down_rev = compute_up_down_graphs(g_augmented_p, weights_augmented_p, node_order_p)
 
 	# We return the CHGraph, 
 	return CHGraph(graph_p, weights_p, node_order_p, levels_p, g_augmented_p, weights_augmented_p, g_up, g_down_rev, indices)
@@ -276,30 +252,7 @@ function witness_search(g::G, weights::Dict{Tuple{Int,Int},Float64}, source::Int
 	return distances_to_targets
 end
 
-function compute_up_down_graphs(g_augmented::G, node_order::Vector{Int}) where G <: AbstractGraph
-	# This function computes the upward and downward graphs from the augmented graph.
-	
-	# g_up contains edges from lower to higher order nodes
-	# g_down contains edges from higher to lower order nodes
-	# The weights of both graphs are the same as in g_augmented.
-
-	g_up = SimpleDiGraph(nv(g_augmented))
-	g_down = SimpleDiGraph(nv(g_augmented))
-	
-	for e in edges(g_augmented)
-		u = src(e)
-		v = dst(e)
-		if node_order[u] < node_order[v]
-			add_edge!(g_up, u, v)
-		else
-			add_edge!(g_down, u, v)
-		end
-	end
-
-	return g_up, g_down
-end
-
-function compute_up_down_graphs_2(g_augmented::G, weights::Dict{Tuple{Int,Int},Float64}, node_order::Vector{Int}) where G <: AbstractGraph
+function compute_up_down_graphs(g_augmented::G, weights::Dict{Tuple{Int,Int},Float64}, node_order::Vector{Int}) where G <: AbstractGraph
 	# This function computes the upward and downward graphs from the augmented graph.
 	
 	# g_up contains edges from lower to higher order nodes
