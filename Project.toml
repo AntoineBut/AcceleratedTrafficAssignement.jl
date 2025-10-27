@@ -5,12 +5,14 @@ authors = ["AntoineBut <antoine.buttier@epfl.ch> and contributors"]
 
 [deps]
 DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
+FasterShortestPaths = "952f73ac-809b-4467-8cda-03990de1fa90"
 Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 SimpleWeightedGraphs = "47aef6b3-ad0c-573a-a1e2-d07658019622"
 
 [compat]
 DataStructures = "0.19.1"
+FasterShortestPaths = "0.1.0"
 Graphs = "1.13.1"
 KernelAbstractions = "0.9.38"
 SimpleWeightedGraphs = "1.5.0"
