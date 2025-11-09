@@ -44,7 +44,7 @@ end
 function permuted_graph(order::Vector{Int}, graph::G) where {G<:AbstractGraph}
     n = nv(graph)
     graph_permuted = SimpleDiGraph(n)
-    indices = zeros(Int, n)
+    indices = Vector{Int}(undef, n)
     for i = 1:n
         indices[order[i]] = i
     end

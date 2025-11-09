@@ -2,6 +2,7 @@ using Graphs, Random, SimpleWeightedGraphs, DataStructures, FasterShortestPaths
 using SuiteSparseMatrixCollection, HarwellRutherfordBoeing
 using GraphIO.EdgeList
 using AcceleratedTrafficAssignement, BenchmarkTools, SparseArrays
+using Cthulhu
 
 Random.seed!(42)
 function load_dimacs(path::String)
@@ -21,6 +22,7 @@ function load_dimacs(path::String)
                 weight = parse(Float64, parts[4])
                 weights[(u, v)] = weight
                 add_edge!(g, u, v)
+
             end
         end
     end
@@ -41,17 +43,19 @@ if DATA
     #        push!(self_loops, e)
     #        continue
     #    end
-    #    weights_1[(u, v)] = 1.0 #+ rand() * 9.0
+    #    weights_1[(u, v)] = 1.0 #+ rand() * 9.0 
     #end
     #for e in self_loops
     #    rem_edge!(g_1, e)
     #end
+    #path = "data/USA-road-t.W.gr"
     path = "data/USA-road-t.COL.gr"
+    #path = "data/USA-road-t.NY.gr"
     g_1, weights_1 = load_dimacs(path)
 
 else
     # Set random seed for reproducibility
-    g = grid((1000, 500))
+    g = grid((100, 100))
     g_1 = SimpleDiGraph(nv(g))
     # Assign random weights to edges
     for e in edges(g)
@@ -95,12 +99,15 @@ function launch()
     println("###### Running CH ######")
     @time CH = compute_CH(g_w, weights)
     println(
-        "OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down)) - AUG:$(ne(CH.g_augmented))",
+        "Vertices:$(nv(g_w)) OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))",
     );
 end
 
 function prof()
-    #@profview compute_CH(g_w, weights)
+    #profview compute_CH(g_w, weights)
+    @profview for _ = 1:100
+        distances = shortest_path_CH(CH, start);
+    end
 end
 
 
@@ -108,15 +115,16 @@ function bench()
     @benchmark compute_CH(g_w, weights)
 end
 @time CH = compute_CH(g_w, weights);
-
+#@profview CH = compute_CH(g_w, weights);®
+#error("Stop here")
 println(
-    "OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))",
+    "Vertices:$(nv(g_w)) OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))",
 );
 
 #@profview for _ in 1:10
 #	distances = shortest_path_CH(CH, 1);
 #end
-start = CH.reordering[nv(g_w) ÷ 2];
+start = CH.reordering[nv(g_w)÷2];
 @time distances = shortest_path_CH(CH, start);
 
 
@@ -132,7 +140,7 @@ for e in edges(g_ref)
 end
 
 @time distances_ref = dijkstra_shortest_paths(g_ref, nv(g_w) ÷ 2, weights_matrix).dists
-storage = DijkstraQueueStorage(weighted__g)
+storage = DijkstraHeapStorage(weighted__g)
 @time custom_dijkstra!(storage, weighted__g, nv(g_w) ÷ 2)
 distance_ref2 = storage.dists
 
@@ -149,7 +157,9 @@ function verify_levels(CH::CHGraph)
 
         if levels[u] <= levels[v]
             err += 1
-            println("Level violation: level($u) = $(levels[u]) <= level($v) = $(levels[v])")
+            println(
+                "Level violation: level($u) = $(levels[u]) <= level($v) = $©(levels[v])",
+            )
         end
     end
     if err > 0
@@ -169,7 +179,9 @@ display(t2)
 println("\n ### Speedup: $(median(t1.times) ./ median(t2.times))x ### \n")
 t3 = @benchmark dijkstra_shortest_paths(g_ref, 1, weights_matrix).dists
 display(t3)
-println("\n ### Speedup CH vs Dijkstra Graphs.jl: $(median(t3.times) ./ median(t2.times))x ### \n")
+println(
+    "\n ### Speedup CH vs Dijkstra Graphs.jl: $(median(t3.times) ./ median(t2.times))x ### \n",
+)
 
 error("Stop here")
 

@@ -4,6 +4,7 @@ using Graphs
 using SimpleWeightedGraphs
 using DataStructures
 using Base.Threads
+using FasterShortestPaths
 
 
 include("utils.jl")
@@ -12,8 +13,7 @@ include("Phast.jl")
 
 
 export CHGraph,
-    augment_graph,
-    edge_difference,
+    augment_graph!,
     witness_search,
     compute_up_down_graphs,
     compute_CH,

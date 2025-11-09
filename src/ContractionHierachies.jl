@@ -14,6 +14,20 @@ struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph}
     reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
 end
 
+struct WitnessStorage
+    heap::BinaryHeap{Pair{Int,Float64},typeof(Base.By(last))}
+    distances::Dict{Int,Float64}
+    visited::Set{Int}
+
+    function WitnessStorage()
+        return new(
+            BinaryHeap(Base.By(last), Pair{Int,Float64}[]),
+            Dict{Int,Float64}(),
+            Set{Int}(),
+        )
+    end
+end
+
 function cost(edge_diff::Int, n_contr_neighbors::Int, level::Int)
     # A cost function to prioritize nodes during contraction
     return 10*edge_diff + 1*n_contr_neighbors + 3*level
@@ -73,6 +87,9 @@ function augment_graph!(
     order_index = 0 # Current index in the ordering
     processed = zeros(Bool, nv(graph)) # Track processed nodes
 
+    # Initialize witness storage
+    witness_storage = WitnessStorage()
+
     # Cost tracking variables
     ed_diffs = zeros(Int, nv(graph)) # Track edge differences
     n_contr_neighbors = zeros(Int, nv(graph)) # Track number of shortcuts per node
@@ -92,6 +109,7 @@ function augment_graph!(
         ed_diffs,
         n_contr_neighbors,
         levels,
+        witness_storage,
     )
 
     while !isempty(queue)
@@ -118,6 +136,7 @@ function augment_graph!(
                 ed_diffs,
                 n_contr_neighbors,
                 levels,
+                witness_storage,
             )
         end
 
@@ -132,7 +151,15 @@ function augment_graph!(
             end
             # Lazy updating
             cost_node = cost(
-                contract!(graph, weights, g_augmented, weights_augmented, node, false),
+                contract!(
+                    graph,
+                    weights,
+                    g_augmented,
+                    weights_augmented,
+                    node,
+                    witness_storage,
+                    false,
+                ),
                 n_contr_neighbors[node],
                 levels[node],
             )
@@ -154,15 +181,43 @@ function augment_graph!(
 
         # No shortcuts need for these nodes
         if isempty(inneighbors_list) || isempty(outneighbors_list)
-            remove_node!(queue, graph, weights, node, inneighbors_list, outneighbors_list, ed_diffs, n_contr_neighbors, levels)
+            remove_node!(
+                queue,
+                graph,
+                weights,
+                node,
+                inneighbors_list,
+                outneighbors_list,
+                ed_diffs,
+                n_contr_neighbors,
+                levels,
+            )
             continue
         end
-		
+
         # Contract the node, adding shortcuts as needed
-        contract!(graph, weights, g_augmented, weights_augmented, node, true)
-		      
+        contract!(
+            graph,
+            weights,
+            g_augmented,
+            weights_augmented,
+            node,
+            witness_storage,
+            true,
+        )
+
         # Finally, remove the edges of the contracted node
-        remove_node!(queue, graph, weights, node, inneighbors_list, outneighbors_list, ed_diffs, n_contr_neighbors, levels)
+        remove_node!(
+            queue,
+            graph,
+            weights,
+            node,
+            inneighbors_list,
+            outneighbors_list,
+            ed_diffs,
+            n_contr_neighbors,
+            levels,
+        )
     end
     println() # New line after progress bar
     return node_order, levels
@@ -185,11 +240,11 @@ function remove_node!(
     # Remove all incoming edges to the node
     if !isempty(inneighbors)
         for n in inneighbors
-			# Updates neighbor levels and contraction counts
+            # Updates neighbor levels and contraction counts
             levels[n] = max(levels[n], levels[node] + 1)
             n_contr_neighbors[n] += 1
-			# Update queue with approximated cost
-			queue[n] = cost(ed_diffs[n], n_contr_neighbors[n], levels[n])
+            # Update queue with approximated cost
+            queue[n] = cost(ed_diffs[n], n_contr_neighbors[n], levels[n])
             rem_edge!(g, n, node)
             delete!(weights, (n, node))
         end
@@ -217,14 +272,23 @@ function recompute_queue(
     ed_diffs::Vector{Int},
     n_contr_neighbors::Vector{Int},
     levels::Vector{Int},
+    witness_storage::WitnessStorage,
 ) where {G<:AbstractGraph}
     # This function recomputes edge differences and builds a new priority queue.
 
     new_queue = PriorityQueue{Int,Int}()
     for node = 1:nv(g)
         if !processed[node]
-            ed = contract!(g, weights, g_augmented, weights_augmented, node, false)
-			ed_diffs[node] = ed
+            ed = contract!(
+                g,
+                weights,
+                g_augmented,
+                weights_augmented,
+                node,
+                witness_storage,
+                false,
+            )
+            ed_diffs[node] = ed
             enqueue!(new_queue, node, cost(ed, n_contr_neighbors[node], levels[node]))
         end
     end
@@ -237,6 +301,7 @@ function contract!(
     g_augmented::G,
     weights_augmented::Dict{Tuple{Int,Int},Float64},
     node::Int,
+    witness_storage::WitnessStorage,
     writing::Bool,
 ) where {G<:AbstractGraph}
     # This function contrats a single node in the graph by adding necessary shortcuts.
@@ -264,7 +329,8 @@ function contract!(
     for i in eachindex(inneighbors_list)
         n = inneighbors_list[i]
         search_dist = maximum(in_weights) + maximum(out_weights)
-        witness_distances = witness_search(g, weights, n, node, search_dist)
+        witness_distances =
+            witness_search(g, weights, n, node, search_dist, witness_storage)
 
         for j in eachindex(outneighbors_list)
             m = outneighbors_list[j]
@@ -302,6 +368,7 @@ function witness_search(
     source::Int,
     skip::Int,
     max_distance::Float64,
+    witness_storage::WitnessStorage,
 ) where {G<:AbstractGraph}
     # This function performs a witness search from source to all neighbors of skip.
     # It avoids going through the skip node.
@@ -309,17 +376,22 @@ function witness_search(
     # It returns the shortest distance found to neighbors of skip or Inf if it exceeds max_distance.
 
     # Implement a Dijkstra-like search with early stopping
-    distances = Dict{Int,Float64}()
-    visited = Set{Int}()
-    queue = PriorityQueue{Int,Float64}()
+    queue = witness_storage.heap
+    distances = witness_storage.distances
+    visited = witness_storage.visited
+    empty!(queue)
+    empty!(distances)
+    empty!(visited)
 
     distances[source] = 0.0
     push!(queue, source => 0.0)
-
     targets = outneighbors(g, skip)
 
     while !isempty(queue)
-        u, dist_u = popfirst!(queue)
+        u, dist_u = pop!(queue)
+        if u in visited
+            continue
+        end
         push!(visited, u)
 
         # Early stopping if we exceed max_distance
@@ -334,13 +406,8 @@ function witness_search(
             edge_weight = weights[(u, v)]
             new_dist = dist_u + edge_weight
             if new_dist < get(distances, v, Inf)
-                if !(v in keys(queue))
-                    push!(queue, v => new_dist)
-                else
-                    queue[v] = new_dist
-                end
+                push!(queue, v => new_dist)
                 distances[v] = new_dist
-
             end
         end
     end
