@@ -14,6 +14,47 @@ struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph}
     reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
 end
 
+struct gpu_CHGraph{G<:AbstractGraph,G1<:AbstractGraph,G2<:AbstractSparseGPUMatrix}
+    g::G # Original graph
+    weights::Dict{Tuple{Int,Int},Float64} # Edge weights
+    node_order::CuVector{Int} # Ordering of nodes
+    levels::CuVector{Int} # Levels of nodes in the hierarchy
+    g_augmented::G # Augmented graph with shortcuts
+    weights_augmented::Dict{Tuple{Int,Int},Float64} # Weights of augmented graph
+    g_up::G1 # Upward graph
+    g_down_rev::G2 # Downward graph, stored reversed for easier backward search
+    reordering::CuVector{Int} # Reordering of nodes by levels (used to map back)
+    gpu_levels::Int64
+
+    function gpu_CHGraph(ch::CHGraph{G,G1}) where {G<:AbstractGraph,G1<:AbstractGraph}
+        gpu_gdown = SparseGPUMatrixCSR(adjacency_matrix(ch.g_down_rev), CUDA.CUDABackend())
+        # Compute the number of levels that will be processed on GPU. We process the first 2% of vertices on CPU.
+        # cumsum on levels to find the level where 2% of vertices are reached
+        target = ceil(Int, 0.02 * nv(ch.g))
+        level = ch.levels[1] # Start from the highest level
+        curr_count = 0
+        while curr_count < target
+            curr_count += count(==(level), ch.levels)
+            level -= 1
+        end
+        println(
+            "GPU levels set to $level (processing $(nv(ch.g) - curr_count) nodes on GPU).",
+        )
+        return new{G,G1,SparseGPUMatrixCSR}(
+            ch.g,
+            ch.weights,
+            CuArray(ch.node_order),
+            CuArray(ch.levels),
+            ch.g_augmented,
+            ch.weights_augmented,
+            ch.g_up,
+            gpu_gdown,
+            CuArray(ch.reordering),
+            level + 1,
+        )
+    end
+end
+
 struct WitnessStorage
     heap::BinaryHeap{Pair{Int,Float64},typeof(Base.By(last))}
     distances::Dict{Int,Float64}

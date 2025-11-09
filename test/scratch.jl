@@ -3,6 +3,7 @@ using SuiteSparseMatrixCollection, HarwellRutherfordBoeing
 using GraphIO.EdgeList
 using AcceleratedTrafficAssignement, BenchmarkTools, SparseArrays
 using Cthulhu
+using CUDA, GPUArrays, GPUGraphs
 
 Random.seed!(42)
 function load_dimacs(path::String)
@@ -115,6 +116,8 @@ function bench()
     @benchmark compute_CH(g_w, weights)
 end
 @time CH = compute_CH(g_w, weights);
+gpu_ch = gpu_CHGraph(CH);
+
 #@profview CH = compute_CH(g_w, weights);®
 #error("Stop here")
 println(
@@ -124,9 +127,13 @@ println(
 #@profview for _ in 1:10
 #	distances = shortest_path_CH(CH, 1);
 #end
+distances1 = CUDA.zeros(Float64, nv(g_w));
+distances2 = CUDA.zeros(Float64, nv(g_w));
 start = CH.reordering[nv(g_w)÷2];
 @time distances = shortest_path_CH(CH, start);
-
+@time distances_gpu = gpu_shortest_path_CH(CH, gpu_ch, start, distances1, distances2);
+diff = abs.(distances .- collect(distances_gpu)) .> 1e-6
+println(isapprox(distances, collect(distances_gpu)))
 
 g_ref = g_w;
 weights_ref = weights;
@@ -146,6 +153,8 @@ distance_ref2 = storage.dists
 
 println(isapprox(distances[CH.reordering], distances_ref))
 println(isapprox(distances[CH.reordering], distance_ref2))
+println(isapprox(collect(distances_gpu[CH.reordering]), distances_ref))
+println(isapprox(collect(distances_gpu[CH.reordering]), distance_ref2))
 function verify_levels(CH::CHGraph)
     err = 0
     g_down_rev = CH.g_down_rev
@@ -176,15 +185,17 @@ t1 = @benchmark custom_dijkstra!(storage, weighted__g, 1)
 display(t1)
 t2 = @benchmark shortest_path_CH(CH, 1)
 display(t2)
-println("\n ### Speedup: $(median(t1.times) ./ median(t2.times))x ### \n")
-t3 = @benchmark dijkstra_shortest_paths(g_ref, 1, weights_matrix).dists
+t3 = @benchmark gpu_shortest_path_CH(CH, gpu_ch, 1, distances1, distances2)
 display(t3)
-println(
-    "\n ### Speedup CH vs Dijkstra Graphs.jl: $(median(t3.times) ./ median(t2.times))x ### \n",
-)
+println("\n ### Speedup-cpu: $(median(t1.times) ./ median(t2.times))x ### \n")
+println("\n ### Speedup-gpu: $(median(t1.times) ./ median(t3.times))x ### \n")
 
 error("Stop here")
-
+@profview for _ = 1:100
+    distances1 .= Inf;
+    distances2 .= Inf;
+    gpu_shortest_path_CH(gpu_ch, 1, distances1, distances2);
+end
 #weights_matrix_T = convert(SparseMatrixCSC{Float64, Int64}, adjacency_matrix(g_w, dir=:in));
 #for e in edges(g_w)
 #	u = src(e)

@@ -5,7 +5,7 @@ using SimpleWeightedGraphs
 using DataStructures
 using Base.Threads
 using FasterShortestPaths
-
+using GPUGraphs, CUDA
 
 include("utils.jl")
 include("ContractionHierachies.jl")
@@ -19,5 +19,7 @@ export CHGraph,
     compute_CH,
     shortest_path_CH,
     reorder_vertices_dfs,
-    permuted_graph
+    permuted_graph,
+    gpu_CHGraph,
+    gpu_shortest_path_CH
 end
