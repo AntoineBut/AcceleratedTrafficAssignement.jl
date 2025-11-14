@@ -2,7 +2,7 @@
 
 julia_version = "1.12.0"
 manifest_format = "2.0"
-project_hash = "a7a32fbed334ea3b19aadac32a4a41c399c4d9bb"
+project_hash = "d63c9b1adad8985e9c3bca82a5786cc558133c2e"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -19,7 +19,7 @@ version = "1.5.0"
     Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [[deps.AcceleratedTrafficAssignement]]
-deps = ["DataStructures", "FasterShortestPaths", "Graphs", "SimpleWeightedGraphs"]
+deps = ["DataStructures", "FasterShortestPaths", "GPUGraphs", "Graphs", "KernelAbstractions", "SimpleWeightedGraphs"]
 path = ".."
 uuid = "01491a18-7338-4144-984c-5e8a3c91a672"
 version = "1.0.0-DEV"
@@ -271,6 +271,14 @@ deps = ["ExprTools", "InteractiveUtils", "LLVM", "Libdl", "Logging", "Precompile
 git-tree-sha1 = "9a8b92a457f55165923fcfe48997b7b93b712fca"
 uuid = "61eb1bfa-7361-4325-ad38-22787b887f55"
 version = "1.7.2"
+
+[[deps.GPUGraphs]]
+deps = ["Atomix", "GPUArrays", "Graphs", "KernelAbstractions", "LinearAlgebra", "SparseArrays"]
+git-tree-sha1 = "cce83a2b173887a4c17adae555e0658a22a329d8"
+repo-rev = "main"
+repo-url = "https://github.com/AntoineBut/GPUGraphs.jl"
+uuid = "fd5a6e86-c761-4989-bab7-5b3464417f6b"
+version = "1.0.0-DEV"
 
 [[deps.GPUToolbox]]
 deps = ["LLVM"]

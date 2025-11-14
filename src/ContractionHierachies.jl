@@ -1,33 +1,48 @@
 # This file contains all the core functions for CH graph preprocessing
 
 # The CHGraph type represents a contraction hierarchy graph
+abstract type AbstractCHGraph end
 
-struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph}
+struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph,T<:Real} <: AbstractCHGraph
     g::G # Original graph
-    weights::Dict{Tuple{Int,Int},Float64} # Edge weights
+    weights::Dict{Tuple{Int,Int},T} # Edge weights
     node_order::Vector{Int} # Ordering of nodes
     levels::Vector{Int} # Levels of nodes in the hierarchy
     g_augmented::G # Augmented graph with shortcuts
-    weights_augmented::Dict{Tuple{Int,Int},Float64} # Weights of augmented graph
+    weights_augmented::Dict{Tuple{Int,Int},T} # Weights of augmented graph
     g_up::G2 # Upward graph
     g_down_rev::G2 # Downward graph, stored reversed for easier backward search
     reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
 end
+function to_device(ch::CHGraph, device::B) where {B<:KernelAbstractions.Backend}
+    return gpu_CHGraph(ch, device)
+end
 
-struct gpu_CHGraph{G<:AbstractGraph,G1<:AbstractGraph,G2<:AbstractSparseGPUMatrix}
+struct gpu_CHGraph{
+    G<:AbstractGraph,
+    G1<:AbstractGraph,
+    G2<:AbstractSparseGPUMatrix,
+    Gpu_V<:AbstractVector{Int},
+    T<:Real,
+} <: AbstractCHGraph
     g::G # Original graph
-    weights::Dict{Tuple{Int,Int},Float64} # Edge weights
-    node_order::CuVector{Int} # Ordering of nodes
-    levels::CuVector{Int} # Levels of nodes in the hierarchy
+    weights::Dict{Tuple{Int,Int},T} # Edge weights
+    node_order::Gpu_V # Ordering of nodes
+    levels::Gpu_V # Levels of nodes in the hierarchy
     g_augmented::G # Augmented graph with shortcuts
-    weights_augmented::Dict{Tuple{Int,Int},Float64} # Weights of augmented graph
+    weights_augmented::Dict{Tuple{Int,Int},T} # Weights of augmented graph
     g_up::G1 # Upward graph
-    g_down_rev::G2 # Downward graph, stored reversed for easier backward search
-    reordering::CuVector{Int} # Reordering of nodes by levels (used to map back)
-    gpu_levels::Int64
+    g_down_rev_cpu::G1 # Downward graph on CPU, stored reversed for easier backward search
+    g_down_rev_gpu::G2 # Downward graph, stored reversed for easier backward search
+    reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
+    cpu_process::Int # Number of nodes to process on CPU
+    gpu_levels::Int # Number of levels to process on GPU
 
-    function gpu_CHGraph(ch::CHGraph{G,G1}) where {G<:AbstractGraph,G1<:AbstractGraph}
-        gpu_gdown = SparseGPUMatrixCSR(adjacency_matrix(ch.g_down_rev), CUDA.CUDABackend())
+    function gpu_CHGraph(
+        ch::CHGraph{G,G1,T},
+        device::B,
+    ) where {G<:AbstractGraph,G1<:AbstractGraph,B<:KernelAbstractions.Backend,T<:Real}
+        gpu_gdown = SparseGPUMatrixCSR(adjacency_matrix(ch.g_down_rev), device)
         # Compute the number of levels that will be processed on GPU. We process the first 2% of vertices on CPU.
         # cumsum on levels to find the level where 2% of vertices are reached
         target = ceil(Int, 0.02 * nv(ch.g))
@@ -37,20 +52,27 @@ struct gpu_CHGraph{G<:AbstractGraph,G1<:AbstractGraph,G2<:AbstractSparseGPUMatri
             curr_count += count(==(level), ch.levels)
             level -= 1
         end
-        println(
-            "GPU levels set to $level (processing $(nv(ch.g) - curr_count) nodes on GPU).",
-        )
-        return new{G,G1,SparseGPUMatrixCSR}(
+        #println(
+        #    "GPU levels set to $level (processing $(nv(ch.g) - curr_count) nodes on GPU).",
+        #)
+        gpu_node_order = allocate(device, Int, nv(ch.g))
+        levels_gpu = allocate(device, Int, nv(ch.g))
+        copyto!(gpu_node_order, ch.node_order)
+        copyto!(levels_gpu, ch.levels)
+        Gpu_V = typeof(gpu_node_order)
+        return new{G,G1,SparseGPUMatrixCSR,Gpu_V,T}(
             ch.g,
             ch.weights,
-            CuArray(ch.node_order),
-            CuArray(ch.levels),
+            gpu_node_order,
+            levels_gpu,
             ch.g_augmented,
             ch.weights_augmented,
             ch.g_up,
+            ch.g_down_rev,
             gpu_gdown,
-            CuArray(ch.reordering),
-            level + 1,
+            ch.reordering,
+            curr_count,
+            level+1,
         )
     end
 end
@@ -77,7 +99,7 @@ end
 
 function compute_CH(
     graph::G,
-    weights::Dict{Tuple{Int,Int},Float64},
+    weights::Dict{Tuple{Int,Int},Float64};
 ) where {G<:AbstractGraph}
     # The CH algorithm computes a contraction hierarchy for the given graph.
 
@@ -204,12 +226,12 @@ function augment_graph!(
                 n_contr_neighbors[node],
                 levels[node],
             )
-            _, p2 = peek(queue)
+            _, p2 = first(queue)
             if cost_node <= p2
                 found = true
             else
                 # Reinsert with updated priority
-                enqueue!(queue, node, cost_node)
+                push!(queue, node => cost_node)
             end
         end
 
@@ -330,7 +352,7 @@ function recompute_queue(
                 false,
             )
             ed_diffs[node] = ed
-            enqueue!(new_queue, node, cost(ed, n_contr_neighbors[node], levels[node]))
+            push!(new_queue, node => cost(ed, n_contr_neighbors[node], levels[node]))
         end
     end
     return new_queue
