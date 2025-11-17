@@ -37,21 +37,32 @@ struct gpu_CHGraph{
     reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
     cpu_process::Int # Number of nodes to process on CPU
     gpu_levels::Int # Number of levels to process on GPU
+    level_ranges::Vector{UnitRange{Int}} # Ranges of nodes per level
 
     function gpu_CHGraph(
         ch::CHGraph{G,G1,T},
         device::B,
     ) where {G<:AbstractGraph,G1<:AbstractGraph,B<:KernelAbstractions.Backend,T<:Real}
-        gpu_gdown = SparseGPUMatrixCSR(adjacency_matrix(ch.g_down_rev), device)
+        gpu_gdown = SparseGPUMatrixSELL(adjacency_matrix(ch.g_down_rev), device)
         # Compute the number of levels that will be processed on GPU. We process the first 2% of vertices on CPU.
-        # cumsum on levels to find the level where 2% of vertices are reached
         target = ceil(Int, 0.02 * nv(ch.g))
-        level = ch.levels[1] # Start from the highest level
+        cpu_count = 0
+        max_level = maximum(ch.levels)
+        gpu_levels = 0
         curr_count = 0
-        while curr_count < target
+        level_ranges = fill(1:1, max_level)
+        start_idx = 1
+        for level = max_level:-1:1
             curr_count += count(==(level), ch.levels)
-            level -= 1
+            end_idx = start_idx + count(==(level), ch.levels) - 1
+            level_ranges[level] = start_idx:end_idx
+            start_idx = end_idx + 1
+            if curr_count >= target && gpu_levels == 0 # First time we reach target, set gpu_levels
+                gpu_levels = level
+                cpu_count = curr_count
+            end
         end
+
         #println(
         #    "GPU levels set to $level (processing $(nv(ch.g) - curr_count) nodes on GPU).",
         #)
@@ -60,7 +71,7 @@ struct gpu_CHGraph{
         copyto!(gpu_node_order, ch.node_order)
         copyto!(levels_gpu, ch.levels)
         Gpu_V = typeof(gpu_node_order)
-        return new{G,G1,SparseGPUMatrixCSR,Gpu_V,T}(
+        return new{G,G1,SparseGPUMatrixSELL,Gpu_V,T}(
             ch.g,
             ch.weights,
             gpu_node_order,
@@ -71,8 +82,9 @@ struct gpu_CHGraph{
             ch.g_down_rev,
             gpu_gdown,
             ch.reordering,
-            curr_count,
-            level+1,
+            cpu_count,
+            gpu_levels,
+            level_ranges,
         )
     end
 end
@@ -93,7 +105,7 @@ end
 
 function cost(edge_diff::Int, n_contr_neighbors::Int, level::Int)
     # A cost function to prioritize nodes during contraction
-    return 10*edge_diff + 1*n_contr_neighbors + 3*level
+    return 10*edge_diff + 1*n_contr_neighbors + 3*(level-1)
 end
 
 
@@ -156,7 +168,7 @@ function augment_graph!(
     # Cost tracking variables
     ed_diffs = zeros(Int, nv(graph)) # Track edge differences
     n_contr_neighbors = zeros(Int, nv(graph)) # Track number of shortcuts per node
-    levels = zeros(Int, nv(graph)) # Track levels of nodes (not used currently)
+    levels = ones(Int, nv(graph)) # Track levels of nodes (not used currently)
 
     ## Recompute priorities at 50%, 90% and 98%
     stop_points = Int.(floor.([0.4, 0.8, 0.9, 0.95, 0.98] .* length(node_order)))

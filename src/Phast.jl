@@ -129,7 +129,7 @@ function forward!(
     # Performs a forward search on the upward graph from the source node.
     # Returns the shortest distances from source to all reachable nodes in g_up.
 
-    visited = zeros(Bool, nv(g_up))
+    visited = Set{Int}()
     queue = PriorityQueue{Int,T}()
 
     distances[source] = zero(T)
@@ -137,10 +137,10 @@ function forward!(
 
     while !isempty(queue)
         u, dist_u = popfirst!(queue)
-        visited[u] = true
+        push!(visited, u)
 
         for (v, edge_weight) in neighbors_and_weights(g_up, u)
-            if visited[v]
+            if v in visited
                 continue
             end
             new_dist = dist_u + edge_weight
@@ -191,15 +191,17 @@ function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
     # Remaining levels on the GPU
     curr = storage.device_distances
     next = storage.device_temp
-    copyto!(curr, distances)
-    copyto!(next, distances)
+    
+    #TODO: only transfer the nodes whose distance has been set in forward pass
+    copyto!(curr, distances) 
+    next .= curr
 
     gpu_levels = gpu_CH.gpu_levels
     levels = gpu_CH.levels
     g_down_gpu = gpu_CH.g_down_rev_gpu
 
-    for level = gpu_levels:-1:0
-        @. curr_level = (levels .== level) || (levels .== (level + 1))
+    for level = gpu_levels:-1:1
+        #@. curr_level = (levels .== level) || (levels .== (level + 1))
         gpu_spmv!(
             next,
             g_down_gpu,
@@ -207,7 +209,8 @@ function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
             mul = GPUGraphs_add,
             add = GPUGraphs_min,
             accum = GPUGraphs_min,
-            mask = curr_level,
+            range = gpu_CH.level_ranges[level],
+            #mask = curr_level,
         )
         #gpu_spmv!(
         #    curr,
@@ -220,7 +223,7 @@ function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
         #)
         curr, next = next, curr
     end
-    copyto!(storage.cpu_distances, curr)
+    #copyto!(storage.cpu_distances, curr)
 end
 
 # Stolen from Guillaume
