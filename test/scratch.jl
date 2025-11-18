@@ -1,14 +1,16 @@
-using Graphs, Random, SimpleWeightedGraphs, DataStructures, FasterShortestPaths
-using SuiteSparseMatrixCollection, HarwellRutherfordBoeing
-using GraphIO.EdgeList
-using AcceleratedTrafficAssignement, BenchmarkTools, SparseArrays
-using Cthulhu
-using CUDA, GPUArrays, GPUGraphs
+using Graphs, Random, SimpleWeightedGraphs, DataStructures
+using AcceleratedTrafficAssignement, FasterShortestPaths
+using SuiteSparseMatrixCollection, HarwellRutherfordBoeing, GraphIO.EdgeList
+using BenchmarkTools, SparseArrays, GPUArrays, GPUGraphs, KernelAbstractions
+using Metal
 
+#backend=CUDABackend()
+backend = MetalBackend()
+T = Float32
 Random.seed!(42)
 function load_dimacs(path::String)
     g = SimpleDiGraph(0)
-    weights = Dict{Tuple{Int,Int},Float64}()
+    weights = Dict{Tuple{Int,Int},T}()
     open(path, "r") do io
         for line in eachline(io)
             if startswith(line, "p")
@@ -20,7 +22,7 @@ function load_dimacs(path::String)
                 parts = split(line)
                 u = parse(Int, parts[2])
                 v = parse(Int, parts[3])
-                weight = parse(Float64, parts[4])
+                weight = parse(T, parts[4])
                 weights[(u, v)] = weight
                 add_edge!(g, u, v)
 
@@ -31,7 +33,7 @@ function load_dimacs(path::String)
 end
 DATA = true
 g_1 = SimpleDiGraph(0)
-weights_1 = Dict{Tuple{Int,Int},Float64}()
+weights_1 = Dict{Tuple{Int,Int},T}()
 if DATA
     #path = "data/USA-road-t.NY.gr"
     #g_1 = loadgraph(path, "ca", EdgeListFormat())
@@ -79,11 +81,11 @@ g_w, weights = permuted_graph(order, g_1, weights_1);
 
 #g_w, weights = g_1, weights_1;
 
-function digraph_to_weightedgraph(g::SimpleDiGraph, weights::Dict{Tuple{Int,Int},Float64})
+function digraph_to_weightedgraph(g::SimpleDiGraph, weights::Dict{Tuple{Int,Int},T}) where {T}
     g_w = SimpleWeightedDiGraph(nv(g))
     sources = zeros(Int, ne(g))
     destinations = zeros(Int, ne(g))
-    edge_weights = zeros(Float64, ne(g))
+    edge_weights = zeros(T, ne(g))
     for (i, e) in enumerate(edges(g))
         u = src(e)
         v = dst(e)
@@ -116,7 +118,7 @@ function bench()
     @benchmark compute_CH(g_w, weights)
 end
 @time CH = compute_CH(g_w, weights);
-gpu_ch = gpu_CHGraph(CH);
+gpu_ch = to_device(CH, backend);
 
 #@profview CH = compute_CH(g_w, weights);®
 #error("Stop here")
@@ -127,11 +129,10 @@ println(
 #@profview for _ in 1:10
 #	distances = shortest_path_CH(CH, 1);
 #end
-distances1 = CUDA.zeros(Float64, nv(g_w));
-distances2 = CUDA.zeros(Float64, nv(g_w));
+
 start = CH.reordering[nv(g_w)÷2];
-@time distances = shortest_path_CH(CH, start);
-@time distances_gpu = gpu_shortest_path_CH(CH, gpu_ch, start, distances1, distances2);
+@time distances = shortest_path_CH(CH, start).distances;
+@time distances_gpu = shortest_path_CH(gpu_ch, start).device_distances;
 diff = abs.(distances .- collect(distances_gpu)) .> 1e-6
 println(isapprox(distances, collect(distances_gpu)))
 
@@ -139,7 +140,7 @@ g_ref = g_w;
 weights_ref = weights;
 weighted__g = digraph_to_weightedgraph(g_ref, weights_ref);
 # Verify correctness with Dijkstra, requires a weight matrix (SparseMatrixCSC)
-weights_matrix = convert(SparseMatrixCSC{Float64,Int64}, adjacency_matrix(g_ref));
+weights_matrix = convert(SparseMatrixCSC{T,Int64}, adjacency_matrix(g_ref));
 for e in edges(g_ref)
     u = src(e)
     v = dst(e)
@@ -181,11 +182,15 @@ function verify_levels(CH::CHGraph)
 end
 verify_levels(CH)
 # Verify : If (u, v) ∈ g_down, then level(u) > level(v).
-t1 = @benchmark custom_dijkstra!(storage, weighted__g, 1)
+
+storage_cpu = PhastStorageCPU(T, nv(g_w))
+storage_gpu = PhastStorageGPU(T, nv(g_w), backend)
+
+t1 = @benchmark custom_dijkstra!(storage, weighted__g, nv(g_w) ÷ 2)
 display(t1)
-t2 = @benchmark shortest_path_CH(CH, 1)
+t2 = @benchmark shortest_path_CH!(CH, nv(g_w) ÷ 2, storage_cpu)
 display(t2)
-t3 = @benchmark gpu_shortest_path_CH(CH, gpu_ch, 1, distances1, distances2)
+t3 = @benchmark shortest_path_CH!(gpu_ch, nv(g_w) ÷ 2, storage_gpu)
 display(t3)
 println("\n ### Speedup-cpu: $(median(t1.times) ./ median(t2.times))x ### \n")
 println("\n ### Speedup-gpu: $(median(t1.times) ./ median(t3.times))x ### \n")
@@ -196,7 +201,7 @@ error("Stop here")
     distances2 .= Inf;
     gpu_shortest_path_CH(gpu_ch, 1, distances1, distances2);
 end
-#weights_matrix_T = convert(SparseMatrixCSC{Float64, Int64}, adjacency_matrix(g_w, dir=:in));
+#weights_matrix_T = convert(SparseMatrixCSC{T, Int64}, adjacency_matrix(g_w, dir=:in));
 #for e in edges(g_w)
 #	u = src(e)
 #	v = dst(e)

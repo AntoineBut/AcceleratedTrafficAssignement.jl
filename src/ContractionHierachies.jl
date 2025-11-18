@@ -89,15 +89,15 @@ struct gpu_CHGraph{
     end
 end
 
-struct WitnessStorage
-    heap::BinaryHeap{Pair{Int,Float64},typeof(Base.By(last))}
-    distances::Dict{Int,Float64}
+struct WitnessStorage{T<:Real}
+    heap::BinaryHeap{Pair{Int,T},typeof(Base.By(last))}
+    distances::Dict{Int,T}
     visited::Set{Int}
 
-    function WitnessStorage()
-        return new(
-            BinaryHeap(Base.By(last), Pair{Int,Float64}[]),
-            Dict{Int,Float64}(),
+    function WitnessStorage(::Type{T}) where {T<:Real}
+        return new{T}(
+            BinaryHeap(Base.By(last), Pair{Int,T}[]),
+            Dict{Int,T}(),
             Set{Int}(),
         )
     end
@@ -111,8 +111,8 @@ end
 
 function compute_CH(
     graph::G,
-    weights::Dict{Tuple{Int,Int},Float64};
-) where {G<:AbstractGraph}
+    weights::Dict{Tuple{Int,Int},T};
+) where {G<:AbstractGraph, T<:Real}
     # The CH algorithm computes a contraction hierarchy for the given graph.
 
     # Create the CH representation of the graph: augment with shortcuts
@@ -151,9 +151,9 @@ end
 function augment_graph!(
     org_graph::G,
     g_augmented::G,
-    org_weights::Dict{Tuple{Int,Int},Float64},
-    weights_augmented::Dict{Tuple{Int,Int},Float64},
-) where {G<:AbstractGraph}
+    org_weights::Dict{Tuple{Int,Int},T},
+    weights_augmented::Dict{Tuple{Int,Int},T},
+) where {G<:AbstractGraph, T<:Real}
     # This function augments the graph by adding shortcuts and computes the node ordering.
     graph = deepcopy(org_graph) # Work on a copy of the graph as we will modify it
     weights = deepcopy(org_weights) # Start with original weights
@@ -163,7 +163,7 @@ function augment_graph!(
     processed = zeros(Bool, nv(graph)) # Track processed nodes
 
     # Initialize witness storage
-    witness_storage = WitnessStorage()
+    witness_storage = WitnessStorage(T)
 
     # Cost tracking variables
     ed_diffs = zeros(Int, nv(graph)) # Track edge differences
@@ -301,14 +301,14 @@ end
 function remove_node!(
     queue::PriorityQueue{Int,Int},
     g::G,
-    weights::Dict{Tuple{Int,Int},Float64},
+    weights::Dict{Tuple{Int,Int},T},
     node::Int,
     inneighbors::Vector{Int},
     outneighbors::Vector{Int},
     ed_diffs::Vector{Int},
     n_contr_neighbors::Vector{Int},
     levels::Vector{Int},
-) where {G<:AbstractGraph}
+) where {G<:AbstractGraph, T<:Real}
     # This function removes a node from the graph and updates the weights dictionary accordingly.
     # We only remove edges because removing vertices messes up the indexing
 
@@ -340,15 +340,15 @@ end
 
 function recompute_queue(
     g::G,
-    weights::Dict{Tuple{Int,Int},Float64},
+    weights::Dict{Tuple{Int,Int},T},
     g_augmented::G,
-    weights_augmented::Dict{Tuple{Int,Int},Float64},
+    weights_augmented::Dict{Tuple{Int,Int},T},
     processed::Vector{Bool},
     ed_diffs::Vector{Int},
     n_contr_neighbors::Vector{Int},
     levels::Vector{Int},
-    witness_storage::WitnessStorage,
-) where {G<:AbstractGraph}
+    witness_storage::WitnessStorage{T},
+) where {G<:AbstractGraph, T<:Real}
     # This function recomputes edge differences and builds a new priority queue.
 
     new_queue = PriorityQueue{Int,Int}()
@@ -372,13 +372,13 @@ end
 
 function contract!(
     g::G,
-    weights::Dict{Tuple{Int,Int},Float64},
+    weights::Dict{Tuple{Int,Int},T},
     g_augmented::G,
-    weights_augmented::Dict{Tuple{Int,Int},Float64},
+    weights_augmented::Dict{Tuple{Int,Int},T},
     node::Int,
-    witness_storage::WitnessStorage,
+    witness_storage::WitnessStorage{T},
     writing::Bool,
-) where {G<:AbstractGraph}
+) where {G<:AbstractGraph, T<:Real}
     # This function contrats a single node in the graph by adding necessary shortcuts.
     # If writing is true, it adds shortcuts to the graph and weights.
     # Else, it only computes the number of shortcuts needed.
@@ -398,7 +398,7 @@ function contract!(
 
     # Explore neighbors in parallel
     # Small nxm matrix to store all possible shortcuts, thread-safe
-    shortcuts = zeros(Float64, length(inneighbors_list), length(outneighbors_list))
+    shortcuts = zeros(T, length(inneighbors_list), length(outneighbors_list))
 
     # For some reason, using (i, n) in enumerate(...) does not work with @threads
     for i in eachindex(inneighbors_list)
@@ -439,12 +439,12 @@ end
 
 function witness_search(
     g::G,
-    weights::Dict{Tuple{Int,Int},Float64},
+    weights::Dict{Tuple{Int,Int},T},
     source::Int,
     skip::Int,
-    max_distance::Float64,
-    witness_storage::WitnessStorage,
-) where {G<:AbstractGraph}
+    max_distance::T,
+    witness_storage::WitnessStorage{T},
+) where {G<:AbstractGraph, T<:Real}
     # This function performs a witness search from source to all neighbors of skip.
     # It avoids going through the skip node.
     # Its stops when all neighbors have been visited or if distances exceed max_distance.
@@ -493,9 +493,9 @@ end
 
 function compute_up_down_graphs(
     g_augmented::G,
-    weights::Dict{Tuple{Int,Int},Float64},
+    weights::Dict{Tuple{Int,Int},T},
     node_order::Vector{Int},
-) where {G<:AbstractGraph}
+) where {G<:AbstractGraph, T<:Real}
     # This function computes the upward and downward graphs from the augmented graph.
 
     # g_up contains edges from lower to higher order nodes
@@ -506,11 +506,11 @@ function compute_up_down_graphs(
     # Need to build array representation
     sources_up = Int[]
     targets_up = Int[]
-    weights_up = Float64[]
+    weights_up = T[]
 
     sources_down = Int[]
     targets_down = Int[]
-    weights_down = Float64[]
+    weights_down = T[]
 
     for e in edges(g_augmented)
         u = src(e)
