@@ -237,12 +237,10 @@ function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
     next .= curr
 
     gpu_levels = gpu_CH.gpu_levels
-    levels = gpu_CH.levels
     g_down_gpu = gpu_CH.g_down_rev_gpu
 
-    for level = gpu_levels+1:-1:1
-        #@. curr_level = (levels == level) || (levels == (level + 1))
-         (
+    for level = gpu_levels:-1:1
+        gpu_spmm!(
             next,
             g_down_gpu,
             curr,
@@ -252,16 +250,17 @@ function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
             range = gpu_CH.level_ranges[level],
             #mask = curr_level,
         )
-        #gpu_spmv!(
-        #    curr,
-        #    g_down_gpu,
-        #    next,
-        #    mul = GPUGraphs_add,
-        #    add = GPUGraphs_min,
-        #    accum = GPUGraphs_min,
-        #    mask = curr_level,
-        #)
-        curr, next = next, curr
+        gpu_spmm!(
+            curr,
+            g_down_gpu,
+            next,
+            mul = GPUGraphs_add,
+            add = GPUGraphs_min,
+            accum = GPUGraphs_min,
+            range = gpu_CH.level_ranges[level],
+            #mask = curr_level,
+        )
+
     end
     #copyto!(storage.cpu_distances, curr)
 end

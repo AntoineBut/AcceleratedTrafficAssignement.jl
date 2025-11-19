@@ -17,10 +17,10 @@ function test_phast_queries(
     res_gpu = zeros(T, nv(g), length(sources))
     distances_phast_gpu = shortest_path_CH(gpu_CH, sources).device_distances
     copyto!(res_gpu, distances_phast_gpu)
-    diff_matrix = res_gpu .== distances_dijkstra
-    println(diff_matrix)
-    println(sum(diff_matrix, dims=1))
-    println(sum(diff_matrix, dims=2))
+    diff_matrix = .!(isapprox.(res_gpu, distances_phast_cpu))
+    #println(diff_matrix)
+    #println(sum(diff_matrix, dims=1))
+    #println(sum(diff_matrix, dims=2))
     @test isapprox(res_gpu, distances_dijkstra)
 end
 

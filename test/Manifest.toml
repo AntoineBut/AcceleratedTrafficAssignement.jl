@@ -147,7 +147,6 @@ version = "0.1.10"
 [[deps.FasterShortestPaths]]
 deps = ["DataStructures", "Graphs", "Random", "SimpleWeightedGraphs", "SparseArrays"]
 git-tree-sha1 = "8b805f0b7c77adc9b3a83a7437b24042ae479011"
-repo-rev = "main"
 repo-url = "https://github.com/gdalle/FasterShortestPaths.jl"
 uuid = "952f73ac-809b-4467-8cda-03990de1fa90"
 version = "0.1.0"
@@ -182,7 +181,7 @@ version = "1.7.4"
 
 [[deps.GPUGraphs]]
 deps = ["Atomix", "GPUArrays", "Graphs", "KernelAbstractions", "LinearAlgebra", "SparseArrays"]
-git-tree-sha1 = "93c5ce1d4b7017e19c9610cc0858e7efa124b62c"
+git-tree-sha1 = "044eb15f8af90efe92f8b94557addb18bd28c421"
 repo-url = "https://github.com/AntoineBut/GPUGraphs.jl"
 uuid = "fd5a6e86-c761-4989-bab7-5b3464417f6b"
 version = "1.0.0-DEV"
