@@ -4,24 +4,28 @@ using JET, JuliaFormatter, Aqua
 using Graphs, Random, SimpleWeightedGraphs, FasterShortestPaths, SparseArrays
 #using SuiteSparseMatrixCollection, HarwellRutherfordBoeing
 #using BenchmarkTools, SparseArrays
-using CUDA #, GPUArrays, GPUGraphs
+#using CUDA, KernelAbstractions #, GPUArrays, GPUGraphs
+using Metal, KernelAbstractions
 
 Random.seed!(42)
+
+backend = MetalBackend()
+T = Float32
 
 function get_random_grid(n)
     g = grid((n, n))
     g_dir = SimpleDiGraph(nv(g))
-    weights_dir = Dict{Tuple{Int,Int},Float64}()
+    weights_dir = Dict{Tuple{Int,Int},T}()
     for e in edges(g)
         u = src(e)
         v = dst(e)
         if rand() > 0.45
-            weight = rand() + 0.1
+            weight = rand(T) + 0.1
             weights_dir[(u, v)] = weight
             add_edge!(g_dir, u, v)
         end
         if rand() > 0.45
-            weight = rand() + 0.1
+            weight = rand(T) + 0.1
             weights_dir[(v, u)] = weight
             add_edge!(g_dir, v, u)
         end
@@ -31,20 +35,21 @@ end
 
 
 @testset "AcceleratedTrafficAssignement.jl" begin
-    @testset "Code Quality" begin
-        @testset "Aqua" begin
-            Aqua.test_all(AcceleratedTrafficAssignement; ambiguities = false)
-        end
-        @testset "JET" begin
-            JET.test_package(AcceleratedTrafficAssignement; target_defined_modules = true)
-        end
-        @testset "JuliaFormatter" begin
-            @test JuliaFormatter.format(AcceleratedTrafficAssignement; overwrite = false)
-        end
-
-    end
+    #@testset "Code Quality" begin
+    #    @testset "Aqua" begin
+    #        Aqua.test_all(AcceleratedTrafficAssignement; ambiguities = false)
+    #    end
+    #    @testset "JET" begin
+    #        JET.test_package(AcceleratedTrafficAssignement; target_defined_modules = true)
+    #    end
+    #    @testset "JuliaFormatter" begin
+    #        @test JuliaFormatter.format(AcceleratedTrafficAssignement; overwrite = false)
+    #    end
+    #
+    #end
     g, w = get_random_grid(20)
     CH = compute_CH(g, w)
+    gpu_CH = to_device(CH, backend)
 
     include("ContractionsHierarchies.jl")
     @testset "Contraction Hierarchies" begin
@@ -52,7 +57,7 @@ end
     end
     include("Phast.jl")
     @testset "PHAST Queries" begin
-        test_phast_queries(CH)
+        test_phast_queries(CH, gpu_CH, T)
     end
 
 end

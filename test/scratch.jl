@@ -7,6 +7,7 @@ using Metal
 #backend=CUDABackend()
 backend = MetalBackend()
 T = Float32
+nsources = 128
 Random.seed!(42)
 function load_dimacs(path::String)
     g = SimpleDiGraph(0)
@@ -81,7 +82,10 @@ g_w, weights = permuted_graph(order, g_1, weights_1);
 
 #g_w, weights = g_1, weights_1;
 
-function digraph_to_weightedgraph(g::SimpleDiGraph, weights::Dict{Tuple{Int,Int},T}) where {T}
+function digraph_to_weightedgraph(
+    g::SimpleDiGraph,
+    weights::Dict{Tuple{Int,Int},T},
+) where {T}
     g_w = SimpleWeightedDiGraph(nv(g))
     sources = zeros(Int, ne(g))
     destinations = zeros(Int, ne(g))
@@ -129,10 +133,10 @@ println(
 #@profview for _ in 1:10
 #	distances = shortest_path_CH(CH, 1);
 #end
-
-start = CH.reordering[nv(g_w)÷2];
-@time distances = shortest_path_CH(CH, start).distances;
-@time distances_gpu = shortest_path_CH(gpu_ch, start).device_distances;
+sources = rand(1:nv(g_w), nsources)
+sources_ch = CH.reordering[sources]
+@time distances = shortest_path_CH(CH, sources_ch).distances;
+@time distances_gpu = shortest_path_CH(gpu_ch, sources_ch).device_distances;
 diff = abs.(distances .- collect(distances_gpu)) .> 1e-6
 println(isapprox(distances, collect(distances_gpu)))
 
@@ -146,16 +150,24 @@ for e in edges(g_ref)
     v = dst(e)
     weights_matrix[u, v] = weights_ref[(u, v)]
 end
+distances_ref = zeros(T, nv(g_w), nsources);
+@time for (j, source) in enumerate(sources)
+    distances_ref[:, j] = dijkstra_shortest_paths(g_ref, source, weights_matrix).dists
+end
 
-@time distances_ref = dijkstra_shortest_paths(g_ref, nv(g_w) ÷ 2, weights_matrix).dists
 storage = DijkstraHeapStorage(weighted__g)
-@time custom_dijkstra!(storage, weighted__g, nv(g_w) ÷ 2)
-distance_ref2 = storage.dists
+distances_ref2 = zeros(T, nv(g_w), nsources);
+@time for (j, source) in enumerate(sources)
+    custom_dijkstra!(storage, weighted__g, source)
+    distances_ref2[:, j] = storage.dists
+end
 
-println(isapprox(distances[CH.reordering], distances_ref))
-println(isapprox(distances[CH.reordering], distance_ref2))
-println(isapprox(collect(distances_gpu[CH.reordering]), distances_ref))
-println(isapprox(collect(distances_gpu[CH.reordering]), distance_ref2))
+println(isapprox(distances_ref, distances_ref2))
+
+println(isapprox(distances[CH.reordering, :], distances_ref))
+println(isapprox(distances[CH.reordering, :], distances_ref2))
+println(isapprox(collect(distances_gpu[CH.reordering, :]), distances_ref))
+println(isapprox(collect(distances_gpu[CH.reordering, :]), distances_ref2))
 function verify_levels(CH::CHGraph)
     err = 0
     g_down_rev = CH.g_down_rev
@@ -183,23 +195,23 @@ end
 verify_levels(CH)
 # Verify : If (u, v) ∈ g_down, then level(u) > level(v).
 
-storage_cpu = PhastStorageCPU(T, nv(g_w))
-storage_gpu = PhastStorageGPU(T, nv(g_w), backend)
+storage_cpu = PhastStorageCPU(T, nv(g_w), nsources)
+storage_gpu = PhastStorageGPU(backend, T, nv(g_w), nsources)
 
-t1 = @benchmark custom_dijkstra!(storage, weighted__g, nv(g_w) ÷ 2)
+t1 = @benchmark for source in sources
+    custom_dijkstra!(storage, weighted__g, source)
+end
 display(t1)
-t2 = @benchmark shortest_path_CH!(CH, nv(g_w) ÷ 2, storage_cpu)
+t2 = @benchmark shortest_path_CH!(CH, sources, storage_cpu)
 display(t2)
-t3 = @benchmark shortest_path_CH!(gpu_ch, nv(g_w) ÷ 2, storage_gpu)
+t3 = @benchmark shortest_path_CH!(gpu_ch, sources, storage_gpu)
 display(t3)
 println("\n ### Speedup-cpu: $(median(t1.times) ./ median(t2.times))x ### \n")
 println("\n ### Speedup-gpu: $(median(t1.times) ./ median(t3.times))x ### \n")
 
 error("Stop here")
 @profview for _ = 1:100
-    distances1 .= Inf;
-    distances2 .= Inf;
-    gpu_shortest_path_CH(gpu_ch, 1, distances1, distances2);
+    shortest_path_CH!(gpu_ch, sources_ch, storage_gpu);
 end
 #weights_matrix_T = convert(SparseMatrixCSC{T, Int64}, adjacency_matrix(g_w, dir=:in));
 #for e in edges(g_w)

@@ -60,7 +60,7 @@ function permuted_graph(
     order::Vector{Int},
     graph::G,
     old_weights::Dict{Tuple{Int,Int},T},
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     n = nv(graph)
     graph_permuted = SimpleDiGraph(n)
     weights_permuted = Dict{Tuple{Int,Int},T}()

@@ -43,7 +43,7 @@ struct gpu_CHGraph{
         ch::CHGraph{G,G1,T},
         device::B,
     ) where {G<:AbstractGraph,G1<:AbstractGraph,B<:KernelAbstractions.Backend,T<:Real}
-        gpu_gdown = SparseGPUMatrixSELL(adjacency_matrix(ch.g_down_rev), device)
+        gpu_gdown = SparseGPUMatrixCSR(adjacency_matrix(ch.g_down_rev), device)
         # Compute the number of levels that will be processed on GPU. We process the first 2% of vertices on CPU.
         target = ceil(Int, 0.02 * nv(ch.g))
         cpu_count = 0
@@ -71,7 +71,7 @@ struct gpu_CHGraph{
         copyto!(gpu_node_order, ch.node_order)
         copyto!(levels_gpu, ch.levels)
         Gpu_V = typeof(gpu_node_order)
-        return new{G,G1,SparseGPUMatrixSELL,Gpu_V,T}(
+        return new{G,G1,SparseGPUMatrixCSR,Gpu_V,T}(
             ch.g,
             ch.weights,
             gpu_node_order,
@@ -95,11 +95,7 @@ struct WitnessStorage{T<:Real}
     visited::Set{Int}
 
     function WitnessStorage(::Type{T}) where {T<:Real}
-        return new{T}(
-            BinaryHeap(Base.By(last), Pair{Int,T}[]),
-            Dict{Int,T}(),
-            Set{Int}(),
-        )
+        return new{T}(BinaryHeap(Base.By(last), Pair{Int,T}[]), Dict{Int,T}(), Set{Int}())
     end
 end
 
@@ -112,7 +108,7 @@ end
 function compute_CH(
     graph::G,
     weights::Dict{Tuple{Int,Int},T};
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     # The CH algorithm computes a contraction hierarchy for the given graph.
 
     # Create the CH representation of the graph: augment with shortcuts
@@ -153,7 +149,7 @@ function augment_graph!(
     g_augmented::G,
     org_weights::Dict{Tuple{Int,Int},T},
     weights_augmented::Dict{Tuple{Int,Int},T},
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     # This function augments the graph by adding shortcuts and computes the node ordering.
     graph = deepcopy(org_graph) # Work on a copy of the graph as we will modify it
     weights = deepcopy(org_weights) # Start with original weights
@@ -308,7 +304,7 @@ function remove_node!(
     ed_diffs::Vector{Int},
     n_contr_neighbors::Vector{Int},
     levels::Vector{Int},
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     # This function removes a node from the graph and updates the weights dictionary accordingly.
     # We only remove edges because removing vertices messes up the indexing
 
@@ -348,7 +344,7 @@ function recompute_queue(
     n_contr_neighbors::Vector{Int},
     levels::Vector{Int},
     witness_storage::WitnessStorage{T},
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     # This function recomputes edge differences and builds a new priority queue.
 
     new_queue = PriorityQueue{Int,Int}()
@@ -378,7 +374,7 @@ function contract!(
     node::Int,
     witness_storage::WitnessStorage{T},
     writing::Bool,
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     # This function contrats a single node in the graph by adding necessary shortcuts.
     # If writing is true, it adds shortcuts to the graph and weights.
     # Else, it only computes the number of shortcuts needed.
@@ -444,7 +440,7 @@ function witness_search(
     skip::Int,
     max_distance::T,
     witness_storage::WitnessStorage{T},
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     # This function performs a witness search from source to all neighbors of skip.
     # It avoids going through the skip node.
     # Its stops when all neighbors have been visited or if distances exceed max_distance.
@@ -495,7 +491,7 @@ function compute_up_down_graphs(
     g_augmented::G,
     weights::Dict{Tuple{Int,Int},T},
     node_order::Vector{Int},
-) where {G<:AbstractGraph, T<:Real}
+) where {G<:AbstractGraph,T<:Real}
     # This function computes the upward and downward graphs from the augmented graph.
 
     # g_up contains edges from lower to higher order nodes
