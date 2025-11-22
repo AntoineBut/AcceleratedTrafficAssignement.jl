@@ -12,8 +12,8 @@ KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 SimpleWeightedGraphs = "47aef6b3-ad0c-573a-a1e2-d07658019622"
 
 [sources]
-FasterShortestPaths = {url = "https://github.com/gdalle/FasterShortestPaths.jl#main"}
-GPUGraphs = {url = "https://github.com/AntoineBut/GPUGraphs.jl#main"}
+FasterShortestPaths = {url = "https://github.com/gdalle/FasterShortestPaths.jl"}
+GPUGraphs = {url = "https://github.com/AntoineBut/GPUGraphs.jl"}
 
 [compat]
 DataStructures = "0.19.1"

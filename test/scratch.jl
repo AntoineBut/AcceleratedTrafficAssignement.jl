@@ -7,7 +7,7 @@ using Metal
 #backend=CUDABackend()
 backend = MetalBackend()
 T = Float32
-nsources = 128
+nsources = 32
 Random.seed!(42)
 function load_dimacs(path::String)
     g = SimpleDiGraph(0)
@@ -53,8 +53,8 @@ if DATA
     #    rem_edge!(g_1, e)
     #end
     #path = "data/USA-road-t.W.gr"
-    path = "data/USA-road-t.COL.gr"
-    #path = "data/USA-road-t.NY.gr"
+    #path = "data/USA-road-t.COL.gr"
+    path = "data/USA-road-t.NY.gr"
     g_1, weights_1 = load_dimacs(path)
 
 else
