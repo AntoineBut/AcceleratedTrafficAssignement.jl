@@ -11,6 +11,8 @@ using KernelAbstractions
 include("utils.jl")
 include("ContractionHierachies.jl")
 include("Phast.jl")
+include("TrafficAssignement.jl")
+
 
 
 export CHGraph,

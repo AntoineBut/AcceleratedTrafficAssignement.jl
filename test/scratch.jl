@@ -124,7 +124,7 @@ end
 @time CH = compute_CH(g_w, weights);
 gpu_ch = to_device(CH, backend);
 
-#@profview CH = compute_CH(g_w, weights);®
+#@profview CH = compute_CH(g_w, weights);
 #error("Stop here")
 println(
     "Vertices:$(nv(g_w)) OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))",
@@ -135,10 +135,15 @@ println(
 #end
 sources = rand(1:nv(g_w), nsources)
 sources_ch = CH.reordering[sources]
-@time distances = shortest_path_CH(CH, sources_ch).distances;
-@time distances_gpu = shortest_path_CH(gpu_ch, sources_ch).device_distances;
-diff = abs.(distances .- collect(distances_gpu)) .> 1e-6
-println(isapprox(distances, collect(distances_gpu)))
+@time CH_res = shortest_path_CH(CH, sources_ch);
+@time gpu_CH_res = shortest_path_CH(gpu_ch, sources_ch);
+distances = CH_res.distances
+parents = CH_res.parents
+distances_gpu = collect(gpu_CH_res.cpu_distances)
+parents_gpu = collect(gpu_CH_res.cpu_parents)
+diff = abs.(distances .- distances_gpu) .> 1e-6
+println(isapprox(distances, distances_gpu))
+#println(isapprox(parents, parents_gpu))
 
 g_ref = g_w;
 weights_ref = weights;
@@ -151,23 +156,29 @@ for e in edges(g_ref)
     weights_matrix[u, v] = weights_ref[(u, v)]
 end
 distances_ref = zeros(T, nv(g_w), nsources);
+parents_ref = zeros(Int, nv(g_w), nsources);
 @time for (j, source) in enumerate(sources)
-    distances_ref[:, j] = dijkstra_shortest_paths(g_ref, source, weights_matrix).dists
+    res = dijkstra_shortest_paths(g_ref, source, weights_matrix)
+    distances_ref[:, j] = res.dists
+    parents_ref[:, j] = res.parents
 end
 
 storage = DijkstraHeapStorage(weighted__g)
 distances_ref2 = zeros(T, nv(g_w), nsources);
+parents_ref2 = zeros(Int, nv(g_w), nsources);
 @time for (j, source) in enumerate(sources)
     custom_dijkstra!(storage, weighted__g, source)
     distances_ref2[:, j] = storage.dists
+    parents_ref2[:, j] = storage.parents
 end
 
 println(isapprox(distances_ref, distances_ref2))
 
 println(isapprox(distances[CH.reordering, :], distances_ref))
-println(isapprox(distances[CH.reordering, :], distances_ref2))
 println(isapprox(collect(distances_gpu[CH.reordering, :]), distances_ref))
-println(isapprox(collect(distances_gpu[CH.reordering, :]), distances_ref2))
+#println(isapprox(parents[CH.reordering, :], parents_ref))
+#println(isapprox(collect(parents_gpu[CH.reordering, :]), parents_ref))
+
 function verify_levels(CH::CHGraph)
     err = 0
     g_down_rev = CH.g_down_rev

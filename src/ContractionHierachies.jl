@@ -13,6 +13,8 @@ struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph,T<:Real} <: AbstractCHGraph
     g_up::G2 # Upward graph
     g_down_rev::G2 # Downward graph, stored reversed for easier backward search
     reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
+    shortcuts::Vector{Tuple{Int,Int,Int}} # Shortcuts added during augmentation: (u,v,skipped)
+    #It is sufficient to store only the node "skipped" for each shortcut.
 end
 function to_device(ch::CHGraph, device::B) where {B<:KernelAbstractions.Backend}
     return gpu_CHGraph(ch, device)
@@ -115,7 +117,8 @@ function compute_CH(
     # The node ordering is also computed during this step.
     weights_augmented = deepcopy(weights)
     g_augmented = deepcopy(graph)
-    node_order, levels = augment_graph!(graph, g_augmented, weights, weights_augmented)
+    node_order, levels, shortcuts =
+        augment_graph!(graph, g_augmented, weights, weights_augmented)
     # Re-order nodes by levels
     reordering = sortperm(levels, rev = true)
 
@@ -141,6 +144,7 @@ function compute_CH(
         g_up,
         g_down_rev,
         indices,
+        shortcuts,
     )
 end
 
@@ -157,6 +161,7 @@ function augment_graph!(
     node_order = Vector{Int}(undef, nv(graph)) # Node ordering, will be filled during contraction
     order_index = 0 # Current index in the ordering
     processed = zeros(Bool, nv(graph)) # Track processed nodes
+    shortcuts = Vector{Tuple{Int,Int,Int}}(undef, 0) # Store shortcuts added during augmentation
 
     # Initialize witness storage
     witness_storage = WitnessStorage(T)
@@ -275,6 +280,7 @@ function augment_graph!(
             node,
             witness_storage,
             true,
+            shortcuts,
         )
 
         # Finally, remove the edges of the contracted node
@@ -291,7 +297,7 @@ function augment_graph!(
         )
     end
     println() # New line after progress bar
-    return node_order, levels
+    return node_order, levels, shortcuts
 end
 
 function remove_node!(
@@ -374,11 +380,15 @@ function contract!(
     node::Int,
     witness_storage::WitnessStorage{T},
     writing::Bool,
+    shortcuts_storage::Union{Vector{Tuple{Int,Int,Int}},Nothing} = nothing,
 ) where {G<:AbstractGraph,T<:Real}
     # This function contrats a single node in the graph by adding necessary shortcuts.
     # If writing is true, it adds shortcuts to the graph and weights.
     # Else, it only computes the number of shortcuts needed.
     # Edge difference = (#shortcuts added) - (#edges of the node)
+    writing &&
+        isnothing(shortcuts_storage) &&
+        error("shortcuts_storage must be provided when writing is true.")
 
     inneighbors_list = inneighbors(g, node)
     outneighbors_list = outneighbors(g, node)
@@ -425,6 +435,7 @@ function contract!(
                 add_edge!(g, n, m) # For computing further shortcuts
                 push!(weights, (n, m) => shortcuts[i, j])
                 push!(weights_augmented, (n, m) => shortcuts[i, j])
+                push!(shortcuts_storage, (n, m, node))
 
             end
         end
