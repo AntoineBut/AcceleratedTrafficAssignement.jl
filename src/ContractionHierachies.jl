@@ -14,7 +14,6 @@ struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph,T<:Real} <: AbstractCHGraph
     g_down_rev::G2 # Downward graph, stored reversed for easier backward search
     reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
     shortcuts::Vector{Tuple{Int,Int,Int}} # Shortcuts added during augmentation: (u,v,skipped)
-    #It is sufficient to store only the node "skipped" for each shortcut.
 end
 function to_device(ch::CHGraph, device::B) where {B<:KernelAbstractions.Backend}
     return gpu_CHGraph(ch, device)
@@ -106,10 +105,10 @@ function cost(edge_diff::Int, n_contr_neighbors::Int, level::Int)
     return 10*edge_diff + 1*n_contr_neighbors + 3*(level-1)
 end
 
-
 function compute_CH(
     graph::G,
     weights::Dict{Tuple{Int,Int},T};
+    old_ordering::Union{Vector{Int},Nothing} = nothing,
 ) where {G<:AbstractGraph,T<:Real}
     # The CH algorithm computes a contraction hierarchy for the given graph.
 
@@ -117,8 +116,9 @@ function compute_CH(
     # The node ordering is also computed during this step.
     weights_augmented = deepcopy(weights)
     g_augmented = deepcopy(graph)
-    node_order, levels, shortcuts =
-        augment_graph!(graph, g_augmented, weights, weights_augmented)
+    node_order, levels, shortcuts = old_ordering === nothing ?
+        augment_graph!(graph, g_augmented, weights, weights_augmented) :
+        augment_graph!(graph, g_augmented, weights, weights_augmented, old_ordering)
     # Re-order nodes by levels
     reordering = sortperm(levels, rev = true)
 
@@ -153,6 +153,73 @@ function augment_graph!(
     g_augmented::G,
     org_weights::Dict{Tuple{Int,Int},T},
     weights_augmented::Dict{Tuple{Int,Int},T},
+    old_ordering::Vector{Int},
+    
+) where {G<:AbstractGraph,T<:Real}
+
+    # This function augments the graph by adding shortcuts and uses the provided node ordering.
+    graph = deepcopy(org_graph) # Work on a copy of the graph as we will modify it
+    weights = deepcopy(org_weights) # Start with original weights
+
+    node_order = sortperm(old_ordering) # Use provided ordering
+    levels = ones(Int, nv(graph)) # Track levels of nodes
+    shortcuts = Vector{Tuple{Int,Int,Int}}(undef, 0) # Store shortcuts added during augmentation
+
+    # Initialize witness storage
+    witness_storage = WitnessStorage(T)
+
+    ## Contract nodes in the provided order
+    for node in 1:length(node_order)
+
+        inneighbors_list = collect(inneighbors(graph, node))
+        outneighbors_list = collect(outneighbors(graph, node))
+
+        # No shortcuts need for these nodes
+        if isempty(inneighbors_list) || isempty(outneighbors_list)
+            remove_node_recompute!(
+                graph,
+                weights,
+                node,
+                inneighbors_list,
+                outneighbors_list,
+                levels,
+            )
+            continue
+        end
+
+        # Contract the node, adding shortcuts as needed
+        contract!(
+            graph,
+            weights,
+            g_augmented,
+            weights_augmented,
+            node,
+            witness_storage,
+            true,
+            shortcuts,
+        )
+
+        # Finally, remove the edges of the contracted node
+        remove_node_recompute!(
+                graph,
+                weights,
+                node,
+                inneighbors_list,
+                outneighbors_list,
+                levels,
+            )
+    end
+    println() # New line after progress bar
+    return node_order, levels, shortcuts
+
+end
+
+function augment_graph!(
+    org_graph::G,
+    g_augmented::G,
+    org_weights::Dict{Tuple{Int,Int},T},
+    weights_augmented::Dict{Tuple{Int,Int},T},
+    
 ) where {G<:AbstractGraph,T<:Real}
     # This function augments the graph by adding shortcuts and computes the node ordering.
     graph = deepcopy(org_graph) # Work on a copy of the graph as we will modify it
@@ -169,7 +236,7 @@ function augment_graph!(
     # Cost tracking variables
     ed_diffs = zeros(Int, nv(graph)) # Track edge differences
     n_contr_neighbors = zeros(Int, nv(graph)) # Track number of shortcuts per node
-    levels = ones(Int, nv(graph)) # Track levels of nodes (not used currently)
+    levels = ones(Int, nv(graph)) # Track levels of nodes
 
     ## Recompute priorities at 50%, 90% and 98%
     stop_points = Int.(floor.([0.4, 0.8, 0.9, 0.95, 0.98] .* length(node_order)))
@@ -307,8 +374,8 @@ function remove_node!(
     node::Int,
     inneighbors::Vector{Int},
     outneighbors::Vector{Int},
-    ed_diffs::Vector{Int},
-    n_contr_neighbors::Vector{Int},
+    ed_diffs::Union{Vector{Int}, Nothing},
+    n_contr_neighbors::Union{Vector{Int}, Nothing},
     levels::Vector{Int},
 ) where {G<:AbstractGraph,T<:Real}
     # This function removes a node from the graph and updates the weights dictionary accordingly.
@@ -334,6 +401,37 @@ function remove_node!(
             levels[m] = max(levels[m], levels[node] + 1)
             n_contr_neighbors[m] += 1
             queue[m] = cost(ed_diffs[m], n_contr_neighbors[m], levels[m])
+            rem_edge!(g, node, m)
+            delete!(weights, (node, m))
+        end
+    end
+end
+
+function remove_node_recompute!(
+    g::G,
+    weights::Dict{Tuple{Int,Int},T},
+    node::Int,
+    inneighbors::Vector{Int},
+    outneighbors::Vector{Int},
+    levels::Vector{Int},
+) where {G<:AbstractGraph,T<:Real}
+    # This function removes a node from the graph and updates the weights dictionary accordingly.
+    # We only remove edges because removing vertices messes up the indexing
+
+    # Remove all incoming edges to the node
+    if !isempty(inneighbors)
+        for n in inneighbors
+            # Updates neighbor levels and contraction counts
+            levels[n] = max(levels[n], levels[node] + 1)
+            # Update queue with approximated cost
+            rem_edge!(g, n, node)
+            delete!(weights, (n, node))
+        end
+    end
+    # Remove all outgoing edges from the node
+    if !isempty(outneighbors)
+        for m in outneighbors
+            levels[m] = max(levels[m], levels[node] + 1)
             rem_edge!(g, node, m)
             delete!(weights, (node, m))
         end
