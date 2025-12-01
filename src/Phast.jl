@@ -192,6 +192,7 @@ function forward!(
         visited = Set{Int}()
         queue = PriorityQueue{Int,T}()
         distances[source, i] = zero(T)
+        parents[source, i] = 0
         push!(queue, source => zero(T))
         while !isempty(queue)
             u, dist_u = popfirst!(queue)
@@ -281,6 +282,7 @@ function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
 
     end
     copyto!(storage.cpu_distances, curr)
+    copyto!(storage.cpu_parents, parents_gpu)
 end
 
 # Stolen from Guillaume
@@ -334,7 +336,6 @@ end
     @Const(range_start),
     monoid_neutral_element, # e.g., Inf for min
 )
-    # Computes A*B and stores the result in C
     col_B_C, row = @index(Global, NTuple)
     #row, col_B_C = @index(Global, NTuple)
     row += range_start - 1
@@ -347,11 +348,9 @@ end
 
         acc = ifelse(new_best, new_dist, acc)
         parent = ifelse(new_best, col_A, parent)
-
     end
 
-    distance[row, col_B_C] =
-        ifelse(distance[row, col_B_C] < acc, distance[row, col_B_C], acc)
     parents[row, col_B_C] =
-        ifelse(distance[row, col_B_C] < acc, parents[row, col_B_C], parent)
+        ifelse(distance[row, col_B_C] <= acc, parents[row, col_B_C], parent)
+    distance[row, col_B_C] = min(distance[row, col_B_C], acc)
 end

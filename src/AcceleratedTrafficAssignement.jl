@@ -16,7 +16,8 @@ include("TrafficAssignement.jl")
 
 
 
-export CHGraph,
+export AbstractCHGraph,
+    CHGraph,
     gpu_CHGraph,
     augment_graph!,
     witness_search,

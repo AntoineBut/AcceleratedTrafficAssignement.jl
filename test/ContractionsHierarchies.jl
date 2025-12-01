@@ -16,7 +16,6 @@ function test_graph_contractions(CH::CHGraph)
     total_edges = ne(CH.g_up) + ne(CH.g_down_rev)
     @test total_edges == ne(CH.g_augmented)
 
-
     @test length(CH.levels) == nv(g)
     # Check that upward and downward graphs only have edges going up and down respectively
     @test verify_ordering(CH) == (true, true)
@@ -75,7 +74,6 @@ function verify_levels(CH::CHGraph)
 
         if levels[u] <= levels[v]
             err += 1
-
         end
     end
     return err == 0

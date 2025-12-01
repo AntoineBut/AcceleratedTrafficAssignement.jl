@@ -103,13 +103,13 @@ end
 function cost(edge_diff::Int, n_contr_neighbors::Int, level::Int)
     # A cost function to prioritize nodes during contraction
     return 10*edge_diff + 1*n_contr_neighbors + 3*(level-1)
-end 
+end
 
 function compute_CH(
     graph::G,
     weights::Dict{Tuple{Int,Int},T};
-    old_CH::Union{CHGraph{G,G2,T}, Nothing} = nothing,
-) where {G<:AbstractGraph, G2<:AbstractGraph, T<:Real}
+    old_CH::Union{CHGraph{G,G2,T},Nothing} = nothing,
+) where {G<:AbstractGraph,G2<:AbstractGraph,T<:Real}
     # The CH algorithm computes a contraction hierarchy for the given graph.
     if old_CH !== nothing
         old_node_order = old_CH.node_order
@@ -123,7 +123,8 @@ function compute_CH(
     # The node ordering is also computed during this step.
     weights_augmented = deepcopy(weights)
     g_augmented = deepcopy(graph)
-    node_order, levels, shortcuts = (old_node_order === nothing) ?
+    node_order, levels, shortcuts =
+        (old_node_order === nothing) ?
         augment_graph!(graph, g_augmented, weights, weights_augmented) :
         re_augment_graph!(graph, g_augmented, weights, weights_augmented, old_node_order)
     # Re-order nodes by levels
@@ -176,9 +177,23 @@ function re_augment_graph!(
 
     # Initialize witness storage
     witness_storage = WitnessStorage(T)
+    order_index = 0 # Current index in the ordering
+    ## Contract nodes in the provided order
+    for node in sortperm(node_order)
 
-    ## Contract nodes in the provided order, from highest ranked to lowest
-    for node in length(node_order):-1:1
+        ## Progress
+        order_index += 1
+        progress = order_index / length(node_order)
+        if order_index % 100 == 0
+            done = Int(floor(progress * 10))
+            print(
+                "\r [" *
+                repeat('█', done) *
+                repeat('*', 10 - done) *
+                "] - $(round(progress * 100, digits=2))%",
+            )
+        end
+
 
         inneighbors_list = collect(inneighbors(graph, node))
         outneighbors_list = collect(outneighbors(graph, node))
@@ -210,13 +225,13 @@ function re_augment_graph!(
 
         # Finally, remove the edges of the contracted node
         remove_node_recompute!(
-                graph,
-                weights,
-                node,
-                inneighbors_list,
-                outneighbors_list,
-                levels,
-            )
+            graph,
+            weights,
+            node,
+            inneighbors_list,
+            outneighbors_list,
+            levels,
+        )
     end
     println() # New line after progress bar
     return node_order, levels, shortcuts
@@ -228,7 +243,6 @@ function augment_graph!(
     g_augmented::G,
     org_weights::Dict{Tuple{Int,Int},T},
     weights_augmented::Dict{Tuple{Int,Int},T},
-    
 ) where {G<:AbstractGraph,T<:Real}
     # This function augments the graph by adding shortcuts and computes the node ordering.
     graph = deepcopy(org_graph) # Work on a copy of the graph as we will modify it
@@ -383,8 +397,8 @@ function remove_node!(
     node::Int,
     inneighbors::Vector{Int},
     outneighbors::Vector{Int},
-    ed_diffs::Union{Vector{Int}, Nothing},
-    n_contr_neighbors::Union{Vector{Int}, Nothing},
+    ed_diffs::Union{Vector{Int},Nothing},
+    n_contr_neighbors::Union{Vector{Int},Nothing},
     levels::Vector{Int},
 ) where {G<:AbstractGraph,T<:Real}
     # This function removes a node from the graph and updates the weights dictionary accordingly.

@@ -12,16 +12,23 @@ function test_phast_queries(
     for (j, source) in enumerate(sources)
         distances_dijkstra[:, j] = dijkstra_shortest_paths(g_w, source).dists
     end
-    distances_phast_cpu = shortest_path_CH(CH, sources).distances
+    # CPU #
+    res_cpu = shortest_path_CH(CH, sources)
+    distances_phast_cpu = res_cpu.distances
+    parents_phast_cpu = res_cpu.parents
     @test isapprox(distances_phast_cpu, distances_dijkstra)
-    res_gpu = zeros(T, nv(g), length(sources))
-    distances_phast_gpu = shortest_path_CH(gpu_CH, sources).device_distances
-    copyto!(res_gpu, distances_phast_gpu)
-    diff_matrix = .!(isapprox.(res_gpu, distances_phast_cpu))
+
+    # GPU #
+    res_gpu = shortest_path_CH(gpu_CH, sources)
+    distances_phast_gpu = collect(res_gpu.cpu_distances)
+    parents_phast_gpu = collect(res_gpu.cpu_parents)
+    diff_matrix = .!(isapprox.(distances_phast_gpu, distances_phast_cpu))
     #println(diff_matrix)
     #println(sum(diff_matrix, dims=1))
     #println(sum(diff_matrix, dims=2))
-    @test isapprox(res_gpu, distances_dijkstra)
+    @test isapprox(distances_phast_gpu, distances_dijkstra)
+    @test verify_parents(CH, sources, distances_phast_cpu, parents_phast_cpu)
+    @test verify_parents(gpu_CH, sources, distances_phast_gpu, parents_phast_gpu)
 end
 
 function digraph_to_weightedgraph(
@@ -42,4 +49,34 @@ function digraph_to_weightedgraph(
     end
     g_w = SimpleWeightedDiGraph(sources, destinations, edge_weights)
     return g_w
+end
+
+function verify_parents(
+    ch::AbstractCHGraph,
+    origins::AbstractVector,
+    distances::AbstractMatrix,
+    parents::AbstractMatrix,
+)
+    err = 0
+    for (i, o) in enumerate(origins)
+        @test parents[o, i] == 0
+        # If u is parent of v, then dist(u) + weight(u,v) == dist(v)
+        for v = 1:nv(ch.g_augmented)
+            p = parents[v, i]
+            if p == -1 && distances[v, i] != typemax(eltype(distances))
+                err += 1
+                #println("Node $v from origin $o has no parent but distance is finite: $(distances[v, i])")
+            end
+            if p != 0 && p != -1
+                edge = (p, v)
+                w = get(ch.weights_augmented, edge, typemax(eltype(distances)))
+                dist_check = distances[p, i] + w
+                if !isapprox(dist_check, distances[v, i])
+                    err += 1
+                    #println("Distance mismatch for node $v from origin $o: computed $(distances[v, i]), expected $dist_check")
+                end
+            end
+        end
+    end
+    return err == 0
 end

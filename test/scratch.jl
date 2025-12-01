@@ -32,7 +32,7 @@ function load_dimacs(path::String)
     end
     return g, weights
 end
-DATA = false
+DATA = true
 g_1 = SimpleDiGraph(0)
 weights_1 = Dict{Tuple{Int,Int},T}()
 if DATA
@@ -53,8 +53,8 @@ if DATA
     #    rem_edge!(g_1, e)
     #end
     #path = "data/USA-road-t.W.gr"
-    #path = "data/USA-road-t.COL.gr"
-    path = "data/USA-road-t.NY.gr"
+    path = "data/USA-road-t.COL.gr"
+    #path = "data/USA-road-t.NY.gr"
     g_1, weights_1 = load_dimacs(path)
 
 else
@@ -128,10 +128,11 @@ gpu_ch = to_device(CH, backend)
 println(
     "Vertices:$(nv(g_w)) OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))",
 );
-    
-@time recomputed_CH = compute_CH(CH.g, CH.weights; old_CH=CH);
+
+@time recomputed_CH = compute_CH(CH.g, CH.weights; old_CH = CH);
+println("Recomputed CH:");
 println(
-    "Recomputed - Vertices:$(nv(recomputed_CH.g)) OG:$(ne(recomputed_CH.g)) - UP:$(ne(recomputed_CH.g_up)) - DOWN:$(ne(recomputed_CH.g_down_rev)) - AUG:$(ne(recomputed_CH.g_augmented))",
+    "Vertices:$(nv(recomputed_CH.g)) OG:$(ne(recomputed_CH.g)) - UP:$(ne(recomputed_CH.g_up)) - DOWN:$(ne(recomputed_CH.g_down_rev)) - AUG:$(ne(recomputed_CH.g_augmented))",
 );
 #@profview for _ in 1:10
 #	distances = shortest_path_CH(CH, 1);
@@ -202,9 +203,7 @@ function verify_levels(CH::CHGraph)
 
         if levels[u] <= levels[v]
             err += 1
-            #println(
-            #    "Level violation: level($u) = $(levels[u]) <= level($v) = $(levels[v])",
-            #)
+            println("Level violation: level($u) = $(levels[u]) <= level($v) = $(levels[v])")
         end
     end
     if err > 0
@@ -218,7 +217,7 @@ end
 verify_levels(CH)
 verify_levels(recomputed_CH)
 # Verify : If (u, v) ∈ g_down, then level(u) > level(v).
-error("Stop here")
+#error("Stop here")
 
 storage_cpu = PhastStorageCPU(T, nv(g_w), nsources)
 storage_gpu = PhastStorageGPU(backend, T, nv(g_w), nsources)

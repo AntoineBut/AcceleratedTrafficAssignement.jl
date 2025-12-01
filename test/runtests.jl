@@ -19,12 +19,12 @@ function get_random_grid(n)
     for e in edges(g)
         u = src(e)
         v = dst(e)
-        if rand() > 0.45
+        if rand() > 0.3
             weight = rand(T) + 0.1
             weights_dir[(u, v)] = weight
             add_edge!(g_dir, u, v)
         end
-        if rand() > 0.45
+        if rand() > 0.3
             weight = rand(T) + 0.1
             weights_dir[(v, u)] = weight
             add_edge!(g_dir, v, u)
@@ -35,29 +35,39 @@ end
 
 
 @testset "AcceleratedTrafficAssignement.jl" begin
-    #@testset "Code Quality" begin
-    #    @testset "Aqua" begin
-    #        Aqua.test_all(AcceleratedTrafficAssignement; ambiguities = false)
-    #    end
-    #    @testset "JET" begin
-    #        JET.test_package(AcceleratedTrafficAssignement; target_defined_modules = true)
-    #    end
-    #    @testset "JuliaFormatter" begin
-    #        @test JuliaFormatter.format(AcceleratedTrafficAssignement; overwrite = false)
-    #    end
-    #
-    #end
+    @testset "Code Quality" begin
+        @testset "Aqua" begin
+            Aqua.test_all(AcceleratedTrafficAssignement; ambiguities = false)
+        end
+        @testset "JET" begin
+            JET.test_package(AcceleratedTrafficAssignement; target_defined_modules = true)
+        end
+        @testset "JuliaFormatter" begin
+            @test JuliaFormatter.format(AcceleratedTrafficAssignement; overwrite = false)
+        end
+
+    end
+    include("ContractionsHierarchies.jl")
+
     g, w = get_random_grid(20)
     CH = compute_CH(g, w)
-    gpu_CH = to_device(CH, backend)
 
-    include("ContractionsHierarchies.jl")
     @testset "Contraction Hierarchies" begin
         test_graph_contractions(CH)
     end
+    recomputed_CH = compute_CH(CH.g, CH.weights; old_CH = CH)
+    @testset "Recomputed Contraction Hierarchies" begin
+        test_graph_contractions(recomputed_CH)
+    end
+
+    gpu_CH = to_device(CH, backend)
+    gpu_recomputed_CH = to_device(recomputed_CH, backend)
     include("Phast.jl")
     @testset "PHAST Queries" begin
         test_phast_queries(CH, gpu_CH, T)
+    end
+    @testset "Recomputed PHAST Queries" begin
+        test_phast_queries(recomputed_CH, gpu_recomputed_CH, T)
     end
 
 end
