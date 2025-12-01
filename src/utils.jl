@@ -64,10 +64,7 @@ function permuted_graph(
     n = nv(graph)
     graph_permuted = SimpleDiGraph(n)
     weights_permuted = Dict{Tuple{Int,Int},T}()
-    indices = zeros(Int, n)
-    for i = 1:n
-        indices[order[i]] = i
-    end
+    indices = invperm(order)
     for e in edges(graph)
         u = src(e)
         v = dst(e)

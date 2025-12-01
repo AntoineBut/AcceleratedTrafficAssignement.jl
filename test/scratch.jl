@@ -32,7 +32,7 @@ function load_dimacs(path::String)
     end
     return g, weights
 end
-DATA = true
+DATA = false
 g_1 = SimpleDiGraph(0)
 weights_1 = Dict{Tuple{Int,Int},T}()
 if DATA
@@ -122,25 +122,34 @@ function bench()
     @benchmark compute_CH(g_w, weights)
 end
 @time CH = compute_CH(g_w, weights);
-gpu_ch = to_device(CH, backend);
+gpu_ch = to_device(CH, backend)
 
 #@profview CH = compute_CH(g_w, weights);
-#error("Stop here")
 println(
     "Vertices:$(nv(g_w)) OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))",
 );
-
+    
+@time recomputed_CH = compute_CH(CH.g, CH.weights; old_CH=CH);
+println(
+    "Recomputed - Vertices:$(nv(recomputed_CH.g)) OG:$(ne(recomputed_CH.g)) - UP:$(ne(recomputed_CH.g_up)) - DOWN:$(ne(recomputed_CH.g_down_rev)) - AUG:$(ne(recomputed_CH.g_augmented))",
+);
 #@profview for _ in 1:10
 #	distances = shortest_path_CH(CH, 1);
 #end
 sources = rand(1:nv(g_w), nsources)
-sources_ch = CH.reordering[sources]
-@time CH_res = shortest_path_CH(CH, sources_ch);
-@time gpu_CH_res = shortest_path_CH(gpu_ch, sources_ch);
+sources_ch = CH.inv_reordering[sources]
+sources_CH_re = recomputed_CH.inv_reordering[sources]
+
+CH_res = shortest_path_CH(CH, sources_ch);
+gpu_CH_res = shortest_path_CH(gpu_ch, sources_ch);
+re_CH_res = shortest_path_CH(recomputed_CH, sources_CH_re);
+
 distances = CH_res.distances
 parents = CH_res.parents
 distances_gpu = collect(gpu_CH_res.cpu_distances)
 parents_gpu = collect(gpu_CH_res.cpu_parents)
+distances_re = re_CH_res.distances
+parents_re = re_CH_res.parents
 diff = abs.(distances .- distances_gpu) .> 1e-6
 println(isapprox(distances, distances_gpu))
 #println(isapprox(parents, parents_gpu))
@@ -174,10 +183,13 @@ end
 
 println(isapprox(distances_ref, distances_ref2))
 
-println(isapprox(distances[CH.reordering, :], distances_ref))
-println(isapprox(collect(distances_gpu[CH.reordering, :]), distances_ref))
-#println(isapprox(parents[CH.reordering, :], parents_ref))
-#println(isapprox(collect(parents_gpu[CH.reordering, :]), parents_ref))
+println(isapprox(distances[CH.inv_reordering, :], distances_ref))
+println(isapprox(collect(distances_gpu[CH.inv_reordering, :]), distances_ref))
+println(isapprox(distances_re[recomputed_CH.inv_reordering, :], distances_ref))
+#println("$(sum(distances_re .== Inf)) --- $(sum(distances_ref .== Inf))")
+
+#println(isapprox(parents[CH.inv_reordering, :], parents_ref))
+#println(isapprox(collect(parents_gpu[CH.inv_reordering, :]), parents_ref))
 
 function verify_levels(CH::CHGraph)
     err = 0
@@ -190,9 +202,9 @@ function verify_levels(CH::CHGraph)
 
         if levels[u] <= levels[v]
             err += 1
-            println(
-                "Level violation: level($u) = $(levels[u]) <= level($v) = $©(levels[v])",
-            )
+            #println(
+            #    "Level violation: level($u) = $(levels[u]) <= level($v) = $(levels[v])",
+            #)
         end
     end
     if err > 0
@@ -204,7 +216,9 @@ function verify_levels(CH::CHGraph)
     end
 end
 verify_levels(CH)
+verify_levels(recomputed_CH)
 # Verify : If (u, v) ∈ g_down, then level(u) > level(v).
+error("Stop here")
 
 storage_cpu = PhastStorageCPU(T, nv(g_w), nsources)
 storage_gpu = PhastStorageGPU(backend, T, nv(g_w), nsources)

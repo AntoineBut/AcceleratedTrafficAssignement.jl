@@ -5,7 +5,7 @@
 function test_graph_contractions(CH::CHGraph)
     g = CH.g
     @test length(CH.node_order) == nv(g)
-    @test length(CH.reordering) == nv(g)
+    @test length(CH.inv_reordering) == nv(g)
     @test length(CH.levels) == nv(g)
 
     # Thest that the weigh dicts have ne(g) entries
@@ -25,7 +25,7 @@ function test_graph_contractions(CH::CHGraph)
 
     # Check that ordering and reordering are consistent
     @test length(unique(CH.node_order)) == nv(g)
-    @test length(unique(CH.reordering)) == nv(g)
+    @test length(unique(CH.inv_reordering)) == nv(g)
 
     # Check that the nodes are indeed re-ordered by levels
     sorted_levels = sort(CH.levels, rev = true)

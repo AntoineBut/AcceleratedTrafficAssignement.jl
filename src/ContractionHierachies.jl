@@ -12,7 +12,7 @@ struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph,T<:Real} <: AbstractCHGraph
     weights_augmented::Dict{Tuple{Int,Int},T} # Weights of augmented graph
     g_up::G2 # Upward graph
     g_down_rev::G2 # Downward graph, stored reversed for easier backward search
-    reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
+    inv_reordering::Vector{Int} # Inverse of the reordering of nodes applied (used to map back)
     shortcuts::Vector{Tuple{Int,Int,Int}} # Shortcuts added during augmentation: (u,v,skipped)
 end
 function to_device(ch::CHGraph, device::B) where {B<:KernelAbstractions.Backend}
@@ -35,7 +35,7 @@ struct gpu_CHGraph{
     g_up::G1 # Upward graph
     g_down_rev_cpu::G1 # Downward graph on CPU, stored reversed for easier backward search
     g_down_rev_gpu::G2 # Downward graph, stored reversed for easier backward search
-    reordering::Vector{Int} # Reordering of nodes by levels (used to map back)
+    inv_reordering::Vector{Int} # Inverse of the reordering of nodes applied (used to map back)
     cpu_process::Int # Number of nodes to process on CPU
     gpu_levels::Int # Number of levels to process on GPU
     level_ranges::Vector{UnitRange{Int}} # Ranges of nodes per level
@@ -82,7 +82,7 @@ struct gpu_CHGraph{
             ch.g_up,
             ch.g_down_rev,
             gpu_gdown,
-            ch.reordering,
+            ch.inv_reordering,
             cpu_count,
             gpu_levels,
             level_ranges,
@@ -103,27 +103,34 @@ end
 function cost(edge_diff::Int, n_contr_neighbors::Int, level::Int)
     # A cost function to prioritize nodes during contraction
     return 10*edge_diff + 1*n_contr_neighbors + 3*(level-1)
-end
+end 
 
 function compute_CH(
     graph::G,
     weights::Dict{Tuple{Int,Int},T};
-    old_ordering::Union{Vector{Int},Nothing} = nothing,
-) where {G<:AbstractGraph,T<:Real}
+    old_CH::Union{CHGraph{G,G2,T}, Nothing} = nothing,
+) where {G<:AbstractGraph, G2<:AbstractGraph, T<:Real}
     # The CH algorithm computes a contraction hierarchy for the given graph.
+    if old_CH !== nothing
+        old_node_order = old_CH.node_order
+        old_inv_reordering = old_CH.inv_reordering
+    else
+        old_node_order = nothing
+        old_inv_reordering = nothing
+    end
 
     # Create the CH representation of the graph: augment with shortcuts
     # The node ordering is also computed during this step.
     weights_augmented = deepcopy(weights)
     g_augmented = deepcopy(graph)
-    node_order, levels, shortcuts = old_ordering === nothing ?
+    node_order, levels, shortcuts = (old_node_order === nothing) ?
         augment_graph!(graph, g_augmented, weights, weights_augmented) :
-        augment_graph!(graph, g_augmented, weights, weights_augmented, old_ordering)
+        re_augment_graph!(graph, g_augmented, weights, weights_augmented, old_node_order)
     # Re-order nodes by levels
     reordering = sortperm(levels, rev = true)
-
     #reordering = collect(1:nv(graph))
-    g_augmented_p, weights_augmented_p, indices =
+
+    g_augmented_p, weights_augmented_p, inv_reordering =
         permuted_graph(reordering, g_augmented, weights_augmented)
     graph_p, weights_p, _ = permuted_graph(reordering, graph, weights)
     #g_augmented_p, weights_augmented_p = g_augmented, weights_augmented
@@ -133,6 +140,10 @@ function compute_CH(
     g_up, g_down_rev =
         compute_up_down_graphs(g_augmented_p, weights_augmented_p, node_order_p)
 
+    if old_inv_reordering !== nothing
+        # Compose the new reordering with the old one to keep track of original nodes
+        inv_reordering = inv_reordering[old_inv_reordering]
+    end
     # We return the CHGraph, 
     return CHGraph(
         graph_p,
@@ -143,33 +154,31 @@ function compute_CH(
         weights_augmented_p,
         g_up,
         g_down_rev,
-        indices,
+        inv_reordering,
         shortcuts,
     )
 end
 
-function augment_graph!(
+function re_augment_graph!(
     org_graph::G,
     g_augmented::G,
     org_weights::Dict{Tuple{Int,Int},T},
     weights_augmented::Dict{Tuple{Int,Int},T},
-    old_ordering::Vector{Int},
-    
+    old_node_order::Vector{Int},
 ) where {G<:AbstractGraph,T<:Real}
-
     # This function augments the graph by adding shortcuts and uses the provided node ordering.
     graph = deepcopy(org_graph) # Work on a copy of the graph as we will modify it
     weights = deepcopy(org_weights) # Start with original weights
 
-    node_order = sortperm(old_ordering) # Use provided ordering
+    node_order = old_node_order
     levels = ones(Int, nv(graph)) # Track levels of nodes
     shortcuts = Vector{Tuple{Int,Int,Int}}(undef, 0) # Store shortcuts added during augmentation
 
     # Initialize witness storage
     witness_storage = WitnessStorage(T)
 
-    ## Contract nodes in the provided order
-    for node in 1:length(node_order)
+    ## Contract nodes in the provided order, from highest ranked to lowest
+    for node in length(node_order):-1:1
 
         inneighbors_list = collect(inneighbors(graph, node))
         outneighbors_list = collect(outneighbors(graph, node))
@@ -421,9 +430,8 @@ function remove_node_recompute!(
     # Remove all incoming edges to the node
     if !isempty(inneighbors)
         for n in inneighbors
-            # Updates neighbor levels and contraction counts
+            # Updates neighbor levels 
             levels[n] = max(levels[n], levels[node] + 1)
-            # Update queue with approximated cost
             rem_edge!(g, n, node)
             delete!(weights, (n, node))
         end

@@ -22,19 +22,24 @@ function assign_flow!(
 	zone_nodes::AbstractVector,
 ) where {T<:Real}
 
-	link_ids_dict = sparseCSC_to_dict(link_ids)
+	reordering = ch.reordering
+	# Map origins and destinations to the reordered graph
+	origins = origins[reordering]
+	destinations = destinations[reordering]
+
+	link_ids_dict = sparseCSC_to_dict(link_ids; reordering=reordering)
     # Storage for shortest paths
     shortest_paths_storage = PhastStorageCPU{T}(nv(ch.g), length(origins))
 
     # Step 1: Recompute CH (only update weights, not the ordering)
-    update_CH_weights!(ch, cost_vec)
+    new_ch = recompute_CH(ch, cost_vec)
 
     # Step 2: Compute shortest paths based on current travel times
-    shortest_path_CH!(ch, origins, shortest_paths_storage)
+    shortest_path_CH!(new_ch, origins, shortest_paths_storage)
 
     # Step 3: Assign flows based on shortest paths
     unpack_paths!(
-		ch,
+		new_ch,
 		demand,
 		origins,
 		destinations,
@@ -42,12 +47,17 @@ function assign_flow!(
 		link_ids_dict,
 		flow_vec,
 	)
-
 end
 
-function update_CH_weights!(ch::AbstractCHGraph, cost_vec::AbstractVector)
+function recompute_CH(ch::AbstractCHGraph, cost_vec::AbstractVector)
     # Update the weights of the CH graph based on the new cost vector
-    # TODO
+    return compute_CH(
+		ch.original_graph,
+		cost_vec,
+		old_node_order=ch.node_order,
+		old_reordering=ch.reordering,
+	)
+
 end
 
 function unpack_paths!(
@@ -90,14 +100,14 @@ function unpack_paths!(
 end
 
 
-function sparseCSC_to_dict(m::SparseMatrixCSC{T,Int}) where {T<:Real}
+function sparseCSC_to_dict(m::SparseMatrixCSC{T,Int}; reordering::AbstractVector{Int}=1:nv(m)) where {T<:Real}
 	d = Dict{Tuple{Int,Int},T}()
 	sizehint!(d, nnz(m))
 	for col in 1:size(m, 2)
 		for row_ptr in m.colptr[col]:(m.colptr[col+1]-1)
 			row = m.rowval[row_ptr]
 			value = m.nzval[row_ptr]
-			d[(row, col)] = value
+			d[(reordering[row], reordering[col])] = value
 		end
 	end
 	return d

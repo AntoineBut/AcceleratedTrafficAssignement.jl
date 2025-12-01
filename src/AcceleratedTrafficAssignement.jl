@@ -7,6 +7,7 @@ using Base.Threads
 using FasterShortestPaths
 using GPUGraphs
 using KernelAbstractions
+using SparseArrays
 
 include("utils.jl")
 include("ContractionHierachies.jl")
