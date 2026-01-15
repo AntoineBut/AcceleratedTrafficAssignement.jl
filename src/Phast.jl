@@ -24,9 +24,9 @@ struct PhastStorageGPU{
 }
     cpu_distances::Matrix{T}
     cpu_parents::Matrix{Int}
+    cpu_parents_temp::Matrix{Int}
     device_distances::Gpu_Md
     device_parents::Gpu_Mp
-    device_temp::Gpu_Md
     curr_level::Gpu_Vb
 end
 function PhastStorageGPU(
@@ -37,9 +37,9 @@ function PhastStorageGPU(
 ) where {T<:Real,B<:KernelAbstractions.Backend}
     cpu_distances = fill(typemax(T), nv, nsources)
     cpu_parents = fill(-1, nv, nsources)
+    cpu_parents_temp = similar(cpu_parents)
     device_distances = KernelAbstractions.zeros(device, T, nv, nsources)
     device_parents = KernelAbstractions.zeros(device, Int, nv, nsources)
-    device_temp = KernelAbstractions.zeros(device, T, nv, nsources)
     curr_level = KernelAbstractions.zeros(device, Bool, nv)
     return PhastStorageGPU{
         T,
@@ -49,9 +49,9 @@ function PhastStorageGPU(
     }(
         cpu_distances,
         cpu_parents,
+        cpu_parents_temp,
         device_distances,
         device_parents,
-        device_temp,
         curr_level,
     )
 end
@@ -187,7 +187,6 @@ function forward!(
 ) where {G<:AbstractGraph,T<:Real}
     # Performs a forward search on the upward graph from the source node.
     # Returns the shortest distances from source to all reachable nodes in g_up.
-
     for (i, source) in enumerate(sources) # Iterate over sources
         visited = Set{Int}()
         queue = PriorityQueue{Int,T}()
@@ -213,6 +212,7 @@ function forward!(
                 end
             end
         end
+
     end
 end
 
@@ -240,6 +240,7 @@ end
 function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
     # Iterates through nodes in rank order.
     # For each node, recompute the shortest distance from incoming edges : d[v] = min(d[v], d[u] + w(u,v))
+    T = eltype(storage.cpu_distances)
     g_down_cpu = gpu_CH.g_down_rev_cpu
     # First levels on CPU
     distances = storage.cpu_distances
@@ -263,26 +264,23 @@ function gpu_backward!(gpu_CH::gpu_CHGraph, storage::PhastStorageGPU)
     curr_level = storage.curr_level
     # Remaining levels on the GPU
     curr = storage.device_distances
-    next = storage.device_temp
     parents_gpu = storage.device_parents
+    parents_gpu .= -1
 
     #TODO: only transfer the nodes whose distance has been set in forward pass
     copyto!(curr, distances)
-    next .= curr
-    copyto!(parents_gpu, parents)
 
     gpu_levels = gpu_CH.gpu_levels
     g_down_gpu = gpu_CH.g_down_rev_gpu
-
     for level = gpu_levels:-1:1
-        phast_spmm!(next, parents_gpu, g_down_gpu, curr, gpu_CH.level_ranges[level])
-        phast_spmm!(curr, parents_gpu, g_down_gpu, next, gpu_CH.level_ranges[level])
-        # Swap curr and next
-        #curr, next = next, curr
-
+        phast_spmm_ow!(curr, parents_gpu, g_down_gpu, gpu_CH.level_ranges[level])
     end
     copyto!(storage.cpu_distances, curr)
-    copyto!(storage.cpu_parents, parents_gpu)
+    # Copy the parents back to CPU at indices where they not set on CPU
+
+    copyto!(storage.cpu_parents_temp, parents_gpu)
+    parents .= ifelse.(storage.cpu_parents .== -1, storage.cpu_parents_temp, storage.cpu_parents)
+    KernelAbstractions.synchronize(get_backend(g_down_gpu))
 end
 
 # Stolen from Guillaume
@@ -292,47 +290,39 @@ function neighbors_and_weights(g::SimpleWeightedDiGraph, u::Integer)
     return zip(view(w.rowval, interval), view(w.nzval, interval))
 end
 
-function phast_spmm!(
+function phast_spmm_ow!(
     distances::DistMat,
     parents::ParentsMat,
     A::SparseGPUMatrixCSR{Tv,Ti},
-    B::InputMat,
     range::UnitRange{Int},
 ) where {
     Tv,
     Ti<:Integer,
-    ResType<:Number,
-    InputType<:Number,
-    DistMat<:AbstractMatrix{ResType},
+    DistMat<:AbstractMatrix{Tv},
     ParentsMat<:AbstractMatrix{Int},
-    InputMat<:AbstractMatrix{InputType},
 }
-    monoid_neutral_element = typemax(ResType)
-    NTuple = (size(B, 2), length(range))
-    #NTuple = (length(range), size(B, 2))
+    monoid_neutral_element = typemax(Tv)
+    NTuple = (size(distances, 2), length(range))
     backend = get_backend(A)
-
-    kernel! = phast_kernel!(backend)
+    kernel! = phast_kernel_ow!(backend)
     kernel!(
         distances,
         parents,
         A.rowptr,
         A.colval,
         A.nzval,
-        B,
         range.start,
         monoid_neutral_element,
         ndrange = NTuple,
     )
 end
 
-@kernel function phast_kernel!(
+@kernel function phast_kernel_ow!(
     distance,
     parents,
     @Const(a_row_ptr),
     @Const(a_col_val),
     @Const(a_nz_val),
-    @Const(B),
     @Const(range_start),
     monoid_neutral_element, # e.g., Inf for min
 )
@@ -343,7 +333,7 @@ end
     parent = -1
     for i = a_row_ptr[row]:(a_row_ptr[row+1]-1)
         col_A = a_col_val[i]
-        new_dist = a_nz_val[i] + B[col_A, col_B_C]
+        new_dist = a_nz_val[i] + distance[col_A, col_B_C]
         new_best = new_dist < acc
 
         acc = ifelse(new_best, new_dist, acc)

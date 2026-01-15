@@ -3,8 +3,17 @@
 # The CHGraph type represents a contraction hierarchy graph
 abstract type AbstractCHGraph end
 
+# TODO: Make these parameters configurable
+USE_LAZY_UPDATES = true
+STOP_LAZY_UPDATES_AT = 1.0
+QUEUE_UPDATES = true
+STOP_POINTS = [0.2, 0.5, 0.8, 0.9, 0.95, 0.98]
+MAX_HOPS_WITNESS = 6
+VERBOSE = true
+
 struct CHGraph{G<:AbstractGraph,G2<:AbstractGraph,T<:Real} <: AbstractCHGraph
     g::G # Original graph
+    zones_dest::Dict{Int,Int} # Mapping of zone nodes to their split counterparts
     weights::Dict{Tuple{Int,Int},T} # Edge weights
     node_order::Vector{Int} # Ordering of nodes
     levels::Vector{Int} # Levels of nodes in the hierarchy
@@ -27,6 +36,7 @@ struct gpu_CHGraph{
     T<:Real,
 } <: AbstractCHGraph
     g::G # Original graph
+    zones_dest::Dict{Int,Int} # Mapping of zone nodes to their split counterparts
     weights::Dict{Tuple{Int,Int},T} # Edge weights
     node_order::Gpu_V # Ordering of nodes
     levels::Gpu_V # Levels of nodes in the hierarchy
@@ -74,6 +84,7 @@ struct gpu_CHGraph{
         Gpu_V = typeof(gpu_node_order)
         return new{G,G1,SparseGPUMatrixCSR,Gpu_V,T}(
             ch.g,
+            ch.zones_dest,
             ch.weights,
             gpu_node_order,
             levels_gpu,
@@ -94,9 +105,19 @@ struct WitnessStorage{T<:Real}
     heap::BinaryHeap{Pair{Int,T},typeof(Base.By(last))}
     distances::Dict{Int,T}
     visited::Set{Int}
+    hops::Dict{Int,Int}
 
-    function WitnessStorage(::Type{T}) where {T<:Real}
-        return new{T}(BinaryHeap(Base.By(last), Pair{Int,T}[]), Dict{Int,T}(), Set{Int}())
+    function WitnessStorage(::Type{T}; graph_size::Int=1000) where {T<:Real}
+        heap = BinaryHeap(Base.By(last), Pair{Int,T}[])
+        distances = Dict{Int,T}()
+        visited = Set{Int}()
+        hops = Dict{Int,Int}()
+        base_size = Int(ceil(graph_size / 10))
+        sizehint!(heap, base_size)
+        sizehint!(distances, base_size)
+        sizehint!(visited, base_size)
+        sizehint!(hops, base_size)
+        return new{T}(heap, distances, visited, hops)
     end
 end
 
@@ -105,9 +126,47 @@ function cost(edge_diff::Int, n_contr_neighbors::Int, level::Int)
     return 10*edge_diff + 1*n_contr_neighbors + 3*(level-1)
 end
 
+function _split_zone_nodes!(graph::G, weights::Dict{Tuple{Int,Int},<:Real}, zone_nodes::Vector{Int}) where {G<:AbstractGraph}
+    # Split zone nodes to avoid paths going through them. For each zone node, 
+    # create a new node that inherits all ingoing edges and keep outgoing edges to the original node
+    max_node = nv(graph)
+    zones_dest = Dict{Int,Int}()
+    for z in zone_nodes
+        in_n = inneighbors(graph, z)
+        new_node = max_node + 1
+        add_vertex!(graph)
+        zones_dest[z] = new_node
+        for u in in_n
+            add_edge!(graph, u, new_node)
+            weights[(u, new_node)] = weights[(u, z)]
+            rem_edge!(graph, u, z)
+            delete!(weights, (u, z))
+        end
+            
+    end
+    return zones_dest
+end
+
+function compute_CH(
+    graph::G,
+    weights::Dict{Tuple{Int,Int},T},
+    zone_nodes::Vector{Int};
+) where {G<:AbstractGraph,T<:Real}
+    # If zone nodes are provided, split them first
+    g_copy = deepcopy(graph)
+    weights_copy = deepcopy(weights)
+    if !isempty(zone_nodes)
+        zones_dest = _split_zone_nodes!(g_copy, weights_copy, zone_nodes)
+    else
+        zones_dest = Dict{Int,Int}()
+    end
+    return compute_CH(g_copy, weights_copy; zones_dest=zones_dest, old_CH=nothing)
+end
+
 function compute_CH(
     graph::G,
     weights::Dict{Tuple{Int,Int},T};
+    zones_dest::Dict{Int,Int}=Dict{Int,Int}(),
     old_CH::Union{CHGraph{G,G2,T},Nothing} = nothing,
 ) where {G<:AbstractGraph,G2<:AbstractGraph,T<:Real}
     # The CH algorithm computes a contraction hierarchy for the given graph.
@@ -122,7 +181,7 @@ function compute_CH(
     # Create the CH representation of the graph: augment with shortcuts
     # The node ordering is also computed during this step.
     weights_augmented = deepcopy(weights)
-    g_augmented = deepcopy(graph)
+    g_augmented = deepcopy(graph) 
     node_order, levels, shortcuts =
         (old_node_order === nothing) ?
         augment_graph!(graph, g_augmented, weights, weights_augmented) :
@@ -148,6 +207,7 @@ function compute_CH(
     # We return the CHGraph, 
     return CHGraph(
         graph_p,
+        zones_dest,
         weights_p,
         node_order_p,
         levels_p,
@@ -184,7 +244,7 @@ function re_augment_graph!(
         ## Progress
         order_index += 1
         progress = order_index / length(node_order)
-        if order_index % 100 == 0
+        if VERBOSE && order_index % 100 == 0
             done = Int(floor(progress * 10))
             print(
                 "\r [" *
@@ -262,7 +322,7 @@ function augment_graph!(
     levels = ones(Int, nv(graph)) # Track levels of nodes
 
     ## Recompute priorities at 50%, 90% and 98%
-    stop_points = Int.(floor.([0.4, 0.8, 0.9, 0.95, 0.98] .* length(node_order)))
+    stop_points = Int.(floor.(STOP_POINTS .* length(node_order)))
 
     # For all nodes, run witness search to determine the number of shortcuts needed
     # The initial priority is the edge difference
@@ -282,7 +342,7 @@ function augment_graph!(
         ## Progress
         order_index += 1
         progress = order_index / length(node_order)
-        if order_index % 100 == 0
+        if VERBOSE && order_index % 100 == 0
             done = Int(floor(progress * 10))
             print(
                 "\r [" *
@@ -311,7 +371,7 @@ function augment_graph!(
         node = 0
         while !found
             node, _ = popfirst!(queue)
-            if isempty(queue) || order_index > 0.98 * length(node_order) # Last nodes, no lazy updating
+            if !USE_LAZY_UPDATES || isempty(queue) || order_index > STOP_LAZY_UPDATES_AT * length(node_order) # Last nodes, no lazy updating
                 found = true
                 break
             end
@@ -386,7 +446,7 @@ function augment_graph!(
             levels,
         )
     end
-    println() # New line after progress bar
+    print("\r") # Clear progress line
     return node_order, levels, shortcuts
 end
 
@@ -411,7 +471,9 @@ function remove_node!(
             levels[n] = max(levels[n], levels[node] + 1)
             n_contr_neighbors[n] += 1
             # Update queue with approximated cost
-            queue[n] = cost(ed_diffs[n], n_contr_neighbors[n], levels[n])
+            if QUEUE_UPDATES
+                queue[n] = cost(ed_diffs[n], n_contr_neighbors[n], levels[n])
+            end
             rem_edge!(g, n, node)
             delete!(weights, (n, node))
         end
@@ -423,7 +485,10 @@ function remove_node!(
 
             levels[m] = max(levels[m], levels[node] + 1)
             n_contr_neighbors[m] += 1
-            queue[m] = cost(ed_diffs[m], n_contr_neighbors[m], levels[m])
+            # Update queue with approximated cost
+            if QUEUE_UPDATES
+                queue[m] = cost(ed_diffs[m], n_contr_neighbors[m], levels[m])
+            end
             rem_edge!(g, node, m)
             delete!(weights, (node, m))
         end
@@ -512,30 +577,31 @@ function contract!(
 
     inneighbors_list = inneighbors(g, node)
     outneighbors_list = outneighbors(g, node)
-    in_weights = [weights[(m, node)] for m in inneighbors_list]
-    out_weights = [weights[(node, m)] for m in outneighbors_list]
 
     num_edges = length(inneighbors_list) + length(outneighbors_list)
-
     # No shortcuts needed
     if isempty(inneighbors_list) || isempty(outneighbors_list)
         return -num_edges
     end
 
+    in_weights = [weights[(m, node)] for m in inneighbors_list]
+    out_weights = [weights[(node, m)] for m in outneighbors_list]
+
+
     # Explore neighbors in parallel
     # Small nxm matrix to store all possible shortcuts, thread-safe
     shortcuts = zeros(T, length(inneighbors_list), length(outneighbors_list))
 
-    # For some reason, using (i, n) in enumerate(...) does not work with @threads
-    for i in eachindex(inneighbors_list)
-        n = inneighbors_list[i]
-        search_dist = maximum(in_weights) + maximum(out_weights)
+    # For some reason, using (i, n) in enumerate(...) does not work with @threads!
+    for (i, n) in enumerate(inneighbors_list)
+        #n = inneighbors_list[i]
+        search_dist = in_weights[i] + maximum(out_weights)
         witness_distances =
             witness_search(g, weights, n, node, search_dist, witness_storage)
 
         for j in eachindex(outneighbors_list)
             m = outneighbors_list[j]
-            direct_distance = weights[(n, node)] + weights[(node, m)]
+            direct_distance = in_weights[i] + out_weights[j]
             if witness_distances[j] > direct_distance
                 # Add shortcut edge
                 shortcuts[i, j] = direct_distance
@@ -578,19 +644,24 @@ function witness_search(
     # It returns the shortest distance found to neighbors of skip or Inf if it exceeds max_distance.
 
     # Implement a Dijkstra-like search with early stopping
-    queue = witness_storage.heap
+    heap = witness_storage.heap
     distances = witness_storage.distances
     visited = witness_storage.visited
-    empty!(queue)
+    hops = witness_storage.hops
+    empty!(heap)
     empty!(distances)
     empty!(visited)
+    empty!(hops)
+
+    push!(visited, skip) # Skip this node
 
     distances[source] = 0.0
-    push!(queue, source => 0.0)
+    hops[source] = 0
+    push!(heap, source => 0.0)
     targets = outneighbors(g, skip)
 
-    while !isempty(queue)
-        u, dist_u = pop!(queue)
+    while !isempty(heap)
+        u, dist_u = pop!(heap)
         if u in visited
             continue
         end
@@ -602,13 +673,14 @@ function witness_search(
         end
 
         for v in outneighbors(g, u)
-            if v == skip || v in visited
+            if v in visited
                 continue
             end
             edge_weight = weights[(u, v)]
             new_dist = dist_u + edge_weight
-            if new_dist < get(distances, v, Inf)
-                push!(queue, v => new_dist)
+            if new_dist < get(distances, v, Inf) && hops[u] + 1 <= MAX_HOPS_WITNESS
+            hops[v] = hops[u] + 1
+            push!(heap, v => new_dist)
                 distances[v] = new_dist
             end
         end

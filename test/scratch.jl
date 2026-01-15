@@ -3,6 +3,8 @@ using AcceleratedTrafficAssignement, FasterShortestPaths
 using SuiteSparseMatrixCollection, HarwellRutherfordBoeing, GraphIO.EdgeList
 using BenchmarkTools, SparseArrays, GPUArrays, GPUGraphs, KernelAbstractions
 using Metal
+using Plots, StatsBase
+
 
 #backend=CUDABackend()
 backend = MetalBackend()
@@ -53,8 +55,9 @@ if DATA
     #    rem_edge!(g_1, e)
     #end
     #path = "data/USA-road-t.W.gr"
-    path = "data/USA-road-t.COL.gr"
+    #path = "data/USA-road-t.COL.gr"
     #path = "data/USA-road-t.NY.gr"
+    path = "data/USA-road-t.BAY.gr"
     g_1, weights_1 = load_dimacs(path)
 
 else
@@ -112,10 +115,12 @@ end
 
 function prof()
     #profview compute_CH(g_w, weights)
-    @profview for _ = 1:100
+    #@profview for _ = 1:100
         distances = shortest_path_CH(CH, start);
-    end
+    #end
 end
+
+
 
 
 function bench()
@@ -125,15 +130,19 @@ end
 gpu_ch = to_device(CH, backend)
 
 #@profview CH = compute_CH(g_w, weights);
+#@profview recomputed_CH = compute_CH(CH.g, CH.weights; old_CH = CH);
 println(
     "Vertices:$(nv(g_w)) OG:$(ne(CH.g)) - UP:$(ne(CH.g_up)) - DOWN:$(ne(CH.g_down_rev)) - AUG:$(ne(CH.g_augmented))",
 );
-
 @time recomputed_CH = compute_CH(CH.g, CH.weights; old_CH = CH);
+#@profview recomputed_CH = compute_CH(CH.g, CH.weights; old_CH = CH);
+
 println("Recomputed CH:");
 println(
     "Vertices:$(nv(recomputed_CH.g)) OG:$(ne(recomputed_CH.g)) - UP:$(ne(recomputed_CH.g_up)) - DOWN:$(ne(recomputed_CH.g_down_rev)) - AUG:$(ne(recomputed_CH.g_augmented))",
-);
+    );
+
+error("Stop here")
 #@profview for _ in 1:10
 #	distances = shortest_path_CH(CH, 1);
 #end
@@ -144,7 +153,7 @@ sources_CH_re = recomputed_CH.inv_reordering[sources]
 CH_res = shortest_path_CH(CH, sources_ch);
 gpu_CH_res = shortest_path_CH(gpu_ch, sources_ch);
 re_CH_res = shortest_path_CH(recomputed_CH, sources_CH_re);
-
+#error("Stop here")
 distances = CH_res.distances
 parents = CH_res.parents
 distances_gpu = collect(gpu_CH_res.cpu_distances)
@@ -183,7 +192,6 @@ parents_ref2 = zeros(Int, nv(g_w), nsources);
 end
 
 println(isapprox(distances_ref, distances_ref2))
-
 println(isapprox(distances[CH.inv_reordering, :], distances_ref))
 println(isapprox(collect(distances_gpu[CH.inv_reordering, :]), distances_ref))
 println(isapprox(distances_re[recomputed_CH.inv_reordering, :], distances_ref))
@@ -191,6 +199,30 @@ println(isapprox(distances_re[recomputed_CH.inv_reordering, :], distances_ref))
 
 #println(isapprox(parents[CH.inv_reordering, :], parents_ref))
 #println(isapprox(collect(parents_gpu[CH.inv_reordering, :]), parents_ref))
+
+function re_test()
+    CH_res = shortest_path_CH(CH, sources_ch);
+    gpu_CH_res = shortest_path_CH(gpu_ch, sources_ch);
+    re_CH_res = shortest_path_CH(recomputed_CH, sources_CH_re);
+
+    distances = CH_res.distances
+    parents = CH_res.parents
+    distances_gpu = collect(gpu_CH_res.cpu_distances)
+    parents_gpu = collect(gpu_CH_res.cpu_parents)
+    distances_re = re_CH_res.distances
+    parents_re = re_CH_res.parents
+
+    println(isapprox(distances_ref, distances_ref2))
+    println(isapprox(distances[CH.inv_reordering, :], distances_ref))
+    println(isapprox(collect(distances_gpu[CH.inv_reordering, :]), distances_ref))
+    println(isapprox(distances_re[recomputed_CH.inv_reordering, :], distances_ref))
+
+    diff = collect(distances_gpu[CH.inv_reordering, :]) .- distances_ref
+    max_diff = maximum(abs.(diff))
+    count_diff = sum(abs.(diff) .> 1e-6)
+    println("Number of differences between GPU CH and reference Dijkstra: $count_diff")
+    println("Max difference between GPU CH and reference Dijkstra: $max_diff")
+end
 
 function verify_levels(CH::CHGraph)
     err = 0
@@ -233,10 +265,38 @@ display(t3)
 println("\n ### Speedup-cpu: $(median(t1.times) ./ median(t2.times))x ### \n")
 println("\n ### Speedup-gpu: $(median(t1.times) ./ median(t3.times))x ### \n")
 
-error("Stop here")
-@profview for _ = 1:100
-    shortest_path_CH!(gpu_ch, sources_ch, storage_gpu);
+
+# Plot the distribution of vertices in the levels of CH
+levels_bay = deepcopy(CH.levels)
+hist_bay = countmap(levels_bay)
+cum_levels_bay = zeros(Int, maximum(levels_bay))
+for l in maximum(levels_bay):-1:1
+    if l == maximum(levels_bay)
+        cum_levels_bay[l] = get(hist_bay, l, 0)
+    else
+        cum_levels_bay[l] = cum_levels_bay[l + 1] + get(hist_bay, l, 0)
+    end
 end
+
+levels_nyc = deepcopy(CH.levels)
+hist_nyc = countmap(levels_nyc)
+cum_levels_nyc = zeros(Int, maximum(levels_nyc))
+for l in maximum(levels_nyc):-1:1
+    if l == maximum(levels_nyc)
+        cum_levels_nyc[l] = get(hist_nyc, l, 0)
+    else
+        cum_levels_nyc[l] = cum_levels_nyc[l + 1] + get(hist_nyc, l, 0)
+    end
+end
+
+
+plot(cum_levels_bay, bins=maximum(levels_bay), title="Cumulative distribution of vertices in CH levels", xlabel="Level", ylabel="Cumulative number of vertices", 
+yscale=:log10, ylim=(1, 1000000), linecolor=:red, linewidth=2, xflip=true, label="BAY")
+plot!(cum_levels_nyc, bins=maximum(levels_nyc), linecolor=:blue, linewidth=2, label="NYC")
+savefig("out/ch_levels_distribution.png")
+#@profview for _ = 1:100
+#    shortest_path_CH!(gpu_ch, sources_ch, storage_gpu);
+#end
 #weights_matrix_T = convert(SparseMatrixCSC{T, Int64}, adjacency_matrix(g_w, dir=:in));
 #for e in edges(g_w)
 #	u = src(e)
